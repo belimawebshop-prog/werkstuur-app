@@ -39,7 +39,7 @@ ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "1.4.0-launch-ready"
+APP_VERSION = "1.4.1-free-mail"
 APP_BUILD = "2026-10-04"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
@@ -59,6 +59,9 @@ SMTP_SECURITY = os.environ.get("SMTP_SECURITY", "ssl").strip().lower()
 SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", SMTP_USERNAME).strip()
 SMTP_FROM_NAME = os.environ.get("SMTP_FROM_NAME", "Werkstuur").strip() or "Werkstuur"
 SMTP_REPLY_TO = os.environ.get("SMTP_REPLY_TO", "support@werkstuur.nl").strip()
+MAIL_TRANSPORT = os.environ.get("MAIL_TRANSPORT", "smtp").strip().lower()
+WEBMAIL_RELAY_URL = os.environ.get("WEBMAIL_RELAY_URL", "").strip()
+WEBMAIL_RELAY_SECRET = os.environ.get("WEBMAIL_RELAY_SECRET", "")
 MAIL_NOTIFICATIONS_ENABLED = os.environ.get("MAIL_NOTIFICATIONS_ENABLED", "1") not in ("0","false","False","no","off")
 APP_PUBLIC_URL = (os.environ.get("APP_PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL") or "https://app.werkstuur.nl").rstrip("/")
 WEBSITE_URL = (os.environ.get("WEBSITE_URL") or "https://werkstuur.nl").rstrip("/")
@@ -249,7 +252,11 @@ def _valid_email(value):
     return value if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value) else ""
 
 def _mail_configured():
-    return bool(MAIL_NOTIFICATIONS_ENABLED and SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSWORD and SMTP_FROM_EMAIL)
+    if not MAIL_NOTIFICATIONS_ENABLED or not SMTP_FROM_EMAIL:
+        return False
+    if MAIL_TRANSPORT == "https":
+        return bool(WEBMAIL_RELAY_URL == "https://werkstuur.nl/app-mail.php" and len(WEBMAIL_RELAY_SECRET) >= 32)
+    return bool(MAIL_TRANSPORT == "smtp" and SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSWORD)
 
 def _record_mail_result(ok, detail=""):
     global _LAST_MAIL_ERROR, _LAST_MAIL_SUCCESS
@@ -274,9 +281,10 @@ def mail_status_payload():
         "status":status,
         "configured":_mail_configured(),
         "enabled":MAIL_NOTIFICATIONS_ENABLED,
-        "host":SMTP_HOST,
-        "port":SMTP_PORT,
-        "security":SMTP_SECURITY,
+        "transport":MAIL_TRANSPORT,
+        "host":"werkstuur.nl" if MAIL_TRANSPORT == "https" else SMTP_HOST,
+        "port":443 if MAIL_TRANSPORT == "https" else SMTP_PORT,
+        "security":"https" if MAIL_TRANSPORT == "https" else SMTP_SECURITY,
         "from_email":SMTP_FROM_EMAIL,
         "last_success":last_success,
         "last_error":last_error,
@@ -301,6 +309,40 @@ def _email_shell(title, intro, rows=None, cta_label=None, cta_url=None, footer=N
             f'{table_html}{cta}<p style="font-size:11px;color:#82929d;line-height:1.55;margin:22px 0 0">{footer_html}</p>'
             '</div></div></body></html>')
 
+def _send_via_https(recipients, subject, text_body, html_body, reply_to):
+    payload = {"recipients":recipients, "subject":str(subject)[:180],
+               "text":str(text_body), "html":str(html_body or ""),
+               "reply_to":_valid_email(reply_to or SMTP_REPLY_TO)}
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    nonce = secrets.token_hex(16)
+    timestamp = str(int(time.time()))
+    signed = (timestamp + "\n" + nonce + "\n" + hashlib.sha256(body).hexdigest()).encode("ascii")
+    signature = hmac.new(WEBMAIL_RELAY_SECRET.encode("utf-8"), signed, hashlib.sha256).hexdigest()
+    headers = {"Content-Type":"application/json", "X-Werkstuur-Timestamp":timestamp,
+               "X-Werkstuur-Nonce":nonce, "X-Werkstuur-Signature":signature}
+    # The same nonce makes a retry safe if delivery succeeded but the response was lost.
+    for attempt in range(2):
+        try:
+            response = httpx.post(WEBMAIL_RELAY_URL, content=body, headers=headers,
+                                  timeout=20, follow_redirects=False)
+            if response.status_code != 200:
+                _record_mail_result(False, "HTTPS-mailroute gaf HTTP " + str(response.status_code))
+                return {"ok":False, "reason":"send_failed"}
+            result = response.json()
+            if result.get("ok") is not True or result.get("id") != nonce:
+                _record_mail_result(False, "HTTPS-mailroute gaf geen geldige ontvangstbevestiging")
+                return {"ok":False, "reason":"send_failed"}
+            _record_mail_result(True)
+            return {"ok":True, "recipients":len(recipients)}
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            if attempt == 0:
+                continue
+            _record_mail_result(False, "HTTPS-mailroute niet bereikbaar: " + type(exc).__name__)
+        except Exception as exc:
+            _record_mail_result(False, "HTTPS-mailroute: " + type(exc).__name__)
+            break
+    return {"ok":False, "reason":"send_failed"}
+
 def _send_email(to, subject, text_body, html_body=None, reply_to=None):
     recipients=[]
     for item in (to if isinstance(to,(list,tuple,set)) else [to]):
@@ -308,6 +350,10 @@ def _send_email(to, subject, text_body, html_body=None, reply_to=None):
         if addr and addr.lower() not in [x.lower() for x in recipients]:recipients.append(addr)
     if not recipients:return {"ok":False,"reason":"no_recipients"}
     if not _mail_configured():return {"ok":False,"reason":"not_configured"}
+    if "\r" in str(subject) or "\n" in str(subject):
+        return {"ok":False,"reason":"invalid_subject"}
+    if MAIL_TRANSPORT == "https":
+        return _send_via_https(recipients, subject, text_body, html_body, reply_to)
     msg=EmailMessage()
     msg["Subject"]=str(subject)[:180]
     msg["From"]=formataddr((SMTP_FROM_NAME,SMTP_FROM_EMAIL))
@@ -1409,8 +1455,8 @@ class Handler(BaseHTTPRequestHandler):
 
             if path=="/api/test-email":
                 if u["role"]!="admin":return self._json({"error":"forbidden"},403)
-                if not _mail_configured():return self._json({"error":"SMTP is nog niet volledig geconfigureerd"},503)
-                intro="Deze test bevestigt dat Werkstuur transactionele e-mail via de ingestelde SMTP-server kan versturen."
+                if not _mail_configured():return self._json({"error":"de e-mailverbinding is nog niet volledig geconfigureerd"},503)
+                intro="Deze test bevestigt dat Werkstuur transactionele e-mail via de ingestelde mailverbinding kan versturen."
                 result=_send_email(u.get("email"),"Werkstuur · testmail",intro,_email_shell("E-mailkoppeling werkt",intro,[('Account',u.get('email') or '—')]),reply_to=SMTP_REPLY_TO)
                 return self._json({"ok":bool(result.get("ok"))},200 if result.get("ok") else 503)
             if path=="/api/change-password":
