@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "1.4.3-org-context"
+APP_VERSION = "1.4.4-status-fix"
 APP_BUILD = "2026-10-05"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
@@ -99,7 +99,8 @@ def _record_status_success():
         _LAST_SUCCESSFUL_STATUS_CHECK = datetime.now(timezone.utc).isoformat()
 
 def _count_rows(table, filters=None):
-    q = sb.table(table).select("id", count="exact").limit(1)
+    count_column = "user_id" if table == "sessions" else "id"
+    q = sb.table(table).select(count_column, count="exact").limit(1)
     for op, column, value in (filters or []):
         q = getattr(q, op)(column, value)
     r = q.execute()
