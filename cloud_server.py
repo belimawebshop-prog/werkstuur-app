@@ -34,12 +34,13 @@ import httpx
 
 import server as core
 import analysis_engine
+import backup_archive
 
 ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "2.0.2-ready"
+APP_VERSION = "2.0.3-refined"
 APP_BUILD = "2026-10-05"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
@@ -1183,6 +1184,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _static(self,path):
         if path=="/":path="/index.html"
+        public_files = {"/index.html", "/intake.html", "/app.js", "/workspace-v200.css",
+                        "/analysis-ui-v201.css", "/refinements-v203.js", "/refinements-v203.css",
+                        "/intake-ui-v200.js", "/manifest.webmanifest", "/apple-touch-icon.png",
+                        "/icon-192.png", "/icon-512.png"}
+        if path not in public_files:self.send_error(404);return
         safe=(STATIC/path.lstrip("/")).resolve()
         if STATIC.resolve() not in safe.parents and safe!=STATIC.resolve():self.send_error(403);return
         if not safe.exists() or not safe.is_file():self.send_error(404);return
@@ -1286,6 +1292,18 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/export":
                 u=self._need(("admin",))
                 if u:
+                    if q.get("format",[""])[0]=="zip":
+                        payload=export_payload()
+                        try:
+                            raw=backup_archive.build_archive(payload,lambda key:sb.storage.from_(BUCKET).download(key))
+                        except ValueError as exc:
+                            return self._json({"error":str(exc)},422)
+                        self.send_response(200)
+                        self.send_header("Content-Type","application/zip")
+                        self.send_header("Content-Disposition",f'attachment; filename="werkstuur-backup-{date.today().isoformat()}.zip"')
+                        self.send_header("Content-Length",str(len(raw)))
+                        self.send_header("Cache-Control","no-store")
+                        self._security_headers();self.end_headers();self.wfile.write(raw);return
                     headers={"Content-Disposition":f'attachment; filename="werkstuur-export-{date.today().isoformat()}.json"'} if q.get("download",[""])[0]=="1" else None
                     return self._json(export_payload(),extra_headers=headers)
                 return
@@ -1746,10 +1764,19 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/cases/"):
                 cid=int(path.split("/")[3]);c=get_case(cid)
                 if not can_access_case(u,c):return self._json({"error":"not found"},404)
-                expected=int(body.get("version",0))
+                allowed={"version","status"}
+                if u["role"] in ("admin","planner"):allowed.add("assigned_to")
+                if set(body)-allowed:
+                    return self._json({"error":"Gebruik de analysefunctie voor waarnemingen en advies. Toewijzing is alleen voor beheerder of planner."},403)
+                if "status" in body and body["status"] not in ("Info ontbreekt","Review","Ingepland","Afgerond"):
+                    return self._json({"error":"ongeldige dossierstatus"},400)
+                try:
+                    if isinstance(body.get("version"),bool):raise ValueError()
+                    expected=int(body.get("version",0))
+                except (ValueError,TypeError):return self._json({"error":"ongeldige dossierversie"},400)
                 if int(c.get("version") or 1)!=expected:return self._json({"error":"version_conflict","remote":c},409)
                 upd={}
-                for k in ("status","score","problem","dispatch","facts","missing"):
+                for k in ("status",):
                     if k in body:upd[k]=body[k]
                 if "assigned_to" in body and u["role"] in ("admin","planner"):upd["assigned_to"]=body["assigned_to"]
                 new_status=body.get("status",c.get("status"))
