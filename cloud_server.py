@@ -10,7 +10,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import io
 import json
 import mimetypes
 import os
@@ -39,8 +38,8 @@ ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "1.4.1-free-mail"
-APP_BUILD = "2026-10-04"
+APP_VERSION = "1.4.2-upload-fix"
+APP_BUILD = "2026-10-05"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
 SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "12"))
@@ -1424,7 +1423,7 @@ class Handler(BaseHTTPRequestHandler):
                     raw=base64.b64decode(file["data_base64"],validate=True)
                     if len(raw)<=5*1024*1024:
                         name=safe_filename(file.get("name"));storage_path=f"org/{org_id}/cases/{row['id']}/{secrets.token_hex(12)}-{name}"
-                        sb.storage.from_(BUCKET).upload(path=storage_path,file=io.BytesIO(raw),file_options={"content-type":file.get("type") or "application/octet-stream","upsert":"false"})
+                        sb.storage.from_(BUCKET).upload(path=storage_path,file=raw,file_options={"content-type":file.get("type") or "application/octet-stream","upsert":"false"})
                         sb.table("attachments").insert({"organization_id":org_id,"case_id":row["id"],"filename":name,"storage_path":storage_path,"content_type":file.get("type") or "application/octet-stream","size_bytes":len(raw),"created_at":now_iso()}).execute()
                 create_audit(row["id"],None,"public_intake","customer self-service; privacy_notice_acknowledged")
                 try:mail_queued=queue_public_intake_emails(org_id,row,missing,score)
@@ -1639,7 +1638,7 @@ class Handler(BaseHTTPRequestHandler):
                 if len(raw)>5*1024*1024:return self._json({"error":"bestand groter dan 5 MB"},400)
                 name=safe_filename(body.get("filename"));storage_path=f"org/{current_org_id(required=True)}/cases/{cid}/{secrets.token_hex(12)}-{name}"
                 ctype=body.get("content_type") or "application/octet-stream"
-                sb.storage.from_(BUCKET).upload(path=storage_path,file=io.BytesIO(raw),file_options={"content-type":ctype,"upsert":"false"})
+                sb.storage.from_(BUCKET).upload(path=storage_path,file=raw,file_options={"content-type":ctype,"upsert":"false"})
                 row=first(sb.table("attachments").insert({"organization_id":current_org_id(required=True),"case_id":cid,"filename":name,"storage_path":storage_path,"content_type":ctype,"size_bytes":len(raw),"created_by":u["id"],"created_at":now_iso()}).execute())
                 create_audit(cid,u["id"],"attachment_added",name);return self._json(row,201)
             return self._json({"error":"not found"},404)

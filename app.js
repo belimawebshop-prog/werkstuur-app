@@ -81,6 +81,9 @@ function show(v){
    $("pageLabel").textContent=detailLabels[v]||(active?(active.querySelector("span:last-child")?.textContent.trim()||active.textContent.trim()):v);
  }
  window.scrollTo(0,0);
+ if(v==="cases"||v==="dashboard"){
+   loadCases().then(()=>render()).catch(e=>toast(e.message||"Cases konden niet worden vernieuwd.","bad"));
+ }
  if(v==="pilotHub")loadPilotHub();
  if(v==="metrics")loadMetrics();
  if(v==="pilot")loadPilot();
