@@ -12,6 +12,7 @@
 
 
 <link rel="stylesheet" href="/workspace-v200.css">
+<link rel="stylesheet" href="/analysis-ui-v201.css">
 </head><body><div class="ws-session-splash" id="sessionSplash" role="status"><svg class="ws-logo" viewBox="0 0 48 48" aria-hidden="true" focusable="false"><rect width="48" height="48" rx="12" fill="#62d0ff"/><path d="m10 13 7 22 7-15 7 15 7-22" fill="none" stroke="#071522" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Je werkomgeving wordt geladen…</span></div>
 <div class="ws-toaststack" id="toastStack" role="status" aria-live="polite" aria-atomic="false"></div>
 <div class="login hidden" id="login"><div class="loginbox cc-loginbox">
@@ -340,6 +341,18 @@
 <div class="sub section">Dit scherm ververst automatisch elke 60 seconden zolang het geopend is. Een oude foutmelding betekent niet automatisch dat het systeem nu defect is; de actuele status bovenaan is leidend.</div>
 </div>
 </div>
+<div class="card section ws-analysis-health" id="analysisHealthCard">
+<div class="eyebrow">Slimme analyse</div><h3 id="analysisHealthState">Analyse controleren…</h3>
+<div class="sub" id="analysisHealthInfo"></div>
+<details class="ws-analysis-questions"><summary>Gecontroleerde storingsscenario’s</summary><ul id="analysisHealthChecks"></ul></details>
+<div class="ws-analysis-footnote">Technische kennisprofielen · €0 extra · geen extern taalmodel</div>
+<details class="ws-analysis-editor"><summary>Test een fictieve melding</summary>
+<p class="sub">Bekijk een advies. Deze test slaat geen dossier op en verstuurt geen e-mail.</p>
+<div class="grid2"><div class="field"><label for="analysisTryType">Installatietype</label><select id="analysisTryType"><option>Laadpaal</option><option>Zonnepanelen</option><option>Thuisbatterij</option><option>Elektro</option></select></div><div class="field"><label for="analysisTryBrand">Merk / fabrikant</label><input id="analysisTryBrand" maxlength="500" value="Easee"></div></div>
+<div class="field"><label for="analysisTryProblem">Fictieve klachtomschrijving</label><textarea id="analysisTryProblem" rows="3" maxlength="8000">De Easee app toont het laadpunt offline. Het is nog onbekend of laden werkt.</textarea></div>
+<button class="btn primary" type="button" onclick="tryAnalysis()">Analyse testen</button>
+<div class="ws-analysis-preview hidden" id="analysisTryResult" aria-live="polite"></div>
+</details></div>
 </section>
 <section class="hidden" id="ownerView">
 <div class="cc-pagehead">
