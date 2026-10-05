@@ -132,7 +132,8 @@ async function boot(){
  }catch(error){$("sessionSplash")?.classList.add("hidden");if(error.status===401){showAuthScreen();return}showAuthScreen();$("loginMsg").textContent=error.message||"De werkomgeving kon niet worden geladen. Probeer opnieuw."}
 }
 
-async function loadCases(){const organization=me?.organization_id,data=await api("/api/cases");if(me?.organization_id===organization)cases=Array.isArray(data)?data:[]}
+function caseForDisplay(c){return c?.analysis&&!c.analysis.unavailable?{...c,...c.analysis,analysis:c.analysis}:c}
+async function loadCases(){const organization=me?.organization_id,data=await api("/api/cases");if(me?.organization_id===organization)cases=Array.isArray(data)?data.map(caseForDisplay):[]}
 async function loadUsers(){const organization=me?.organization_id,data=await api("/api/users");if(me?.organization_id===organization)users=Array.isArray(data)?data:[]}
 async function loadSettings(){const organization=me?.organization_id,data=await api("/api/settings");if(me?.organization_id===organization)settings=data}
 function fmtDateTime(v){
@@ -191,6 +192,7 @@ async function loadSystemStatus(silent=false){
     sysLastError.textContent="Geen geregistreerde serverfout sinds de huidige runtime is gestart.";
     sysLastError.className="good";
   }
+  await loadAnalysisStatus();
  }catch(e){
   sysOverall.textContent="Statuscheck mislukt";
   sysOverall.className="warn";
@@ -256,6 +258,51 @@ function renderWorkorders(){
 function openNew(){if(!requireCaseWrite())return;lastModalFocus=document.activeElement;newModal.classList.remove("hidden");document.body.classList.add("modal-open");linkFieldLabels();setTimeout(()=>nCustomer.focus(),30)}
 function plannerBrands(){let opts=nType.value==="Laadpaal"?["Easee","Alfen","Wallbox","Zaptec","Anders/onbekend"]:nType.value==="Zonnepanelen"?["SolarEdge","GoodWe","Growatt","SMA","Enphase","Anders/onbekend"]:nType.value==="Thuisbatterij"?["SolarEdge","GoodWe","BYD","Huawei","Tesla","Anders/onbekend"]:["Anders/onbekend"];nManufacturer.innerHTML=opts.map(x=>`<option>${x}</option>`).join("")}
 plannerBrands();
+function analysisSummary(a){
+ if(!a||a.unavailable)return emptyState("Analyse vraagt om aanvulling","Laat de planner de klachtomschrijving en het installatietype controleren.","alert");
+ const warn=(a.warnings||[]).map(item=>`<div class="ws-analysis-warning">${wsIcon("alert")}<span>${escapeReport(item)}</span></div>`).join("");
+ const questions=(a.followup_questions||[]).map(q=>`<li>${escapeReport(q)}</li>`).join("");
+ return `<div class="ws-analysis-heading"><span>${wsIcon(a.triage_level==="veiligheidsreview"?"shield":"work")}<b>${escapeReport(a.fault_category)}</b></span><span class="pill">Zekerheid: ${escapeReport(a.fault_confidence)}</span></div><div class="ws-analysis-meta"><span>${escapeReport(a.dispatch)}</span><b>${Number(a.score)||0}% informatie compleet</b></div>${a.triage_level==="veiligheidsreview"?'<div class="ws-analysis-warning urgent">'+wsIcon("shield")+'<span>Veiligheid heeft voorrang. Laat de verantwoordelijke serviceorganisatie de situatie beoordelen vóór gebruik of werkzaamheden.</span></div>':""}${warn}${questions?`<details class="ws-analysis-questions"><summary>${(a.followup_questions||[]).length} gerichte vervolgvragen</summary><ul>${questions}</ul></details>`:""}<p class="sub ws-analysis-notice">${escapeReport(a.notice||"")}</p>`;
+}
+function analysisInput(field,value){
+ const id="analysisField-"+field.key,currentValue=String(value??""),required=field.required?' <small>nodig voor voorbereiding</small>':"";
+ if(field.options?.length){const options=[...new Set(["",...field.options,...(currentValue&&!field.options.includes(currentValue)?[currentValue]:[])])];return `<div class="field"><label for="${id}">${escapeReport(field.label)}${required}</label><select id="${id}" data-analysis-key="${escAttr(field.key)}">${options.map(v=>`<option value="${escAttr(v)}"${v===currentValue?' selected':''}>${escapeReport(v||"Onbekend")}</option>`).join("")}</select></div>`}
+ return `<div class="field"><label for="${id}">${escapeReport(field.label)}${required}</label><input id="${id}" data-analysis-key="${escAttr(field.key)}" maxlength="500" value="${escAttr(currentValue)}"${field.key==="soc"?' inputmode="decimal" placeholder="0–100%, of onbekend"':""}></div>`;
+}
+function renderCaseAnalysis(c){
+ const a=c.analysis;
+ if(!a)return "";
+ const editable=caseWriteAllowed()&&["admin","planner"].includes(me?.role)&&!a.unavailable;
+ const observations=a.observations||{},base=[{key:"manufacturer",label:"Merk / fabrikant"},{key:"model",label:"Model"},{key:"serial",label:"Serienummer"}];
+ const editor=editable?`<details class="ws-analysis-editor"><summary>${wsIcon("intake")}Waarnemingen aanvullen</summary><div id="caseAnalysisForm"><div class="field"><label for="analysisProblem">Klachtomschrijving</label><textarea id="analysisProblem" maxlength="8000" rows="3">${escapeReport(c.problem||"")}</textarea></div><div class="grid2">${[...base,...(a.input_fields||[])].map(f=>analysisInput(f,observations[f.key])).join("")}</div><div class="cc-inline-actions"><button class="btn" type="button" onclick="previewCaseAnalysis()">Advies bekijken</button><button class="btn primary" type="button" onclick="saveCaseAnalysis()">Waarnemingen &amp; analyse opslaan</button></div><div class="ws-analysis-preview hidden" id="caseAnalysisPreview" aria-live="polite"></div></div></details>`:"";
+ return `<div class="ws-analysis-panel"><div class="eyebrow">Slimme analyse</div><h3>Gericht advies voor dit dossier</h3>${analysisSummary(a)}${editor}<div class="ws-analysis-footnote">Kennisprofielen · geen automatische uitlezing van apparatuur of foto's</div></div>`;
+}
+function collectCaseAnalysis(){
+ if(!current)throw new Error("Open eerst een servicedossier.");
+ const extra={...(current.analysis?.observations||{})};document.querySelectorAll("#caseAnalysisForm [data-analysis-key]").forEach(el=>extra[el.dataset.analysisKey]=el.value.trim());
+ return {type:current.type,problem:$("analysisProblem").value.trim(),extra};
+}
+async function previewCaseAnalysis(){
+ if(!requireCaseWrite()||!["admin","planner"].includes(me?.role))return;
+ const caseId=current.id,payload=collectCaseAnalysis(),a=await api("/api/analysis-preview",{method:"POST",body:JSON.stringify(payload)});
+ if(current?.id!==caseId)return;
+ $("caseAnalysisPreview").innerHTML='<div class="eyebrow">Voorbeeld · nog niet opgeslagen</div>'+analysisSummary(a);$("caseAnalysisPreview").classList.remove("hidden");
+}
+async function saveCaseAnalysis(){
+ if(!requireCaseWrite()||!["admin","planner"].includes(me?.role))return;
+ const caseId=current.id,organization=me.organization_id,payload=collectCaseAnalysis();payload.version=current.version;
+ try{await api(`/api/cases/${caseId}/analysis`,{method:"POST",body:JSON.stringify(payload)});if(me?.organization_id!==organization)return;await loadCases();render();if(current?.id===caseId){await openCase(caseId);selectCaseTab("prep")}toast("Waarnemingen bewaard en analyse bijgewerkt. Beoordeel het advies vóór uitvoering.","good")}
+ catch(error){if(error.status===409){await loadCases();render();if(current?.id===caseId){await openCase(caseId);selectCaseTab("prep")}toast("Dit dossier is intussen gewijzigd. Controleer de nieuwste gegevens vóór je opnieuw opslaat.","warn")}else throw error}
+}
+async function loadAnalysisStatus(){
+ const root=$("analysisHealthCard");if(!root)return;
+ try{const s=await api("/api/analysis-status");$("analysisHealthState").textContent=s.healthy?"Analyse operationeel":"Analyse vraagt aandacht";$("analysisHealthState").className=s.healthy?"good":"warn";$("analysisHealthInfo").textContent=`${s.passed}/${s.total} storingsscenario’s geslaagd · versie ${s.version} · ${s.duration_ms} ms`;$("analysisHealthChecks").innerHTML=(s.checks||[]).map(c=>`<li>${wsIcon(c.passed?"check":"alert")}${escapeReport(c.name)}</li>`).join("")}
+ catch(error){$("analysisHealthState").textContent="Analysecontrole niet beschikbaar";$("analysisHealthState").className="warn";$("analysisHealthInfo").textContent=error.message}
+}
+async function tryAnalysis(){
+ const a=await api("/api/analysis-preview",{method:"POST",body:JSON.stringify({type:$("analysisTryType").value,problem:$("analysisTryProblem").value.trim(),extra:{manufacturer:$("analysisTryBrand").value.trim()}})});
+ $("analysisTryResult").innerHTML=analysisSummary(a);$("analysisTryResult").classList.remove("hidden");
+}
 async function createCase(){if(!requireCaseWrite())return;const customer=nCustomer.value.trim(),problem=nProblem.value.trim();if(!customer||!problem){toast("Vul een klantnaam en een omschrijving van de melding in.","warn");(!customer?nCustomer:nProblem).focus();return}const data=await api("/api/cases",{method:"POST",body:JSON.stringify({customer,city:nCity.value.trim(),type:nType.value,asset:"Nog te identificeren",problem,extra:{manufacturer:nManufacturer.value,model:nModel.value.trim(),serial:nSerial.value.trim()}})});closeNew();[nCustomer,nCity,nProblem,nModel,nSerial].forEach(input=>input.value="");await loadCases();render();toast("Het dossier is aangemaakt.","good");await openCase(data.id)}
 async function openCase(id){
  const selected=cases.find(c=>Number(c.id)===Number(id));if(!selected)return;current=selected;
@@ -265,7 +312,7 @@ async function openCase(id){
  const kv=(label,value)=>`<div class="kv"><span>${escapeReport(label)}</span><span>${escapeReport(value||"Niet opgegeven")}</span></div>`;
  caseMain.innerHTML='<div class="eyebrow">Klantmelding</div><h3>Melding & installatie</h3><div class="ws-problem">'+escapeReport(c.problem||"Nog geen omschrijving van de klacht.")+'</div><div class="ws-kv-grid">'+kv("Klant",c.customer)+kv("Plaats",c.city)+kv("Installatie",c.type)+kv("Asset",c.asset)+kv("Merk",c.manufacturer)+kv("Model",c.model)+kv("Serienummer",c.serial_no)+kv("Dossierversie",String(c.version||1))+'</div><div class="field"><label for="caseStatus">Status van het dossier</label><select id="caseStatus">'+["Info ontbreekt","Review","Ingepland","Afgerond"].map(status=>'<option'+(c.status===status?' selected':'')+'>'+status+'</option>').join("")+'</select></div><div class="ws-case-note">'+wsIcon("shield")+'De planner en vakbekwame monteur houden de regie over beoordeling, veiligheid en uitvoering.</div>';
  const checks=(title,items,name="check",style="")=>items?.length?`<div class="eyebrow section">${escapeReport(title)}</div>`+items.map(item=>`<div class="check ${style}">${wsIcon(name)}<span>${escapeReport(item)}</span></div>`).join(""):"";
- prep.innerHTML=checks("Nog aan te vullen",c.missing,"alert","warn")+checks("Kritisch vóór vertrek",c.ftf_critical,"shield")+checks("Aandachtspunten",c.ftf_gaps,"alert","warn")+checks("Onderdelen & middelen",c.ftf_parts,"wrench")+checks("Monteurbriefing",c.prep,"check");if(!prep.innerHTML)prep.innerHTML=emptyState("Nog geen voorbereiding vastgelegd","Beoordeel de melding en leg relevante aandachtspunten voor de monteur vast.","work");
+ prep.innerHTML=renderCaseAnalysis(c)+checks("Nog aan te vullen",c.missing,"alert","warn")+checks("Kritisch vóór vertrek",c.ftf_critical,"shield")+checks("Aandachtspunten",c.ftf_gaps,"alert","warn")+checks("Onderdelen & middelen",c.ftf_parts,"wrench")+checks("Monteurbriefing",c.prep,"check");if(!prep.innerHTML)prep.innerHTML=emptyState("Nog geen voorbereiding vastgelegd","Beoordeel de melding en leg relevante aandachtspunten voor de monteur vast.","work");
  const sourceLink=c.knowledge_url?`<a href="${safeHref(c.knowledge_url)}" target="_blank" rel="noopener noreferrer">${escapeReport(c.knowledge_title||"Documentatie")}</a>`:escapeReport(c.knowledge_title||"Generiek"),routeLink=c.route_source_url?`<a href="${safeHref(c.route_source_url)}" target="_blank" rel="noopener noreferrer">${escapeReport(c.route_source_title||"Routebron")}</a>`:"—";
  caseSide.innerHTML=`<div class="eyebrow">Voorbereiding</div><h3>Beoordeling & vervolgstap</h3><div class="ws-side-score"><div><small>Volledigheid van de intake</small><br><b>${score}%</b></div><span class="ws-scorebar" aria-hidden="true"><i style="width:${score}%"></i></span></div>${kv("Werkadvies",c.dispatch||"Nog te beoordelen")}${kv("Storingsroute",c.fault_category)}${kv("Service-route",c.service_route)}${kv("Expertise",c.required_competence||"Technische review")}${kv("Locatie nodig",c.site_trigger)}${kv("Escalatie",c.escalation_path)}<details class="cc-techdetails section"><summary>Bronnen & technische context</summary>${kv("Bron melding",c.source)}<div class="kv"><span>Technische bron</span><span>${sourceLink}</span></div>${kv("Integratiedoelen",(c.api_targets||[]).join(", "))}${kv("Zekerheid",c.fault_confidence)}${kv("Triageniveau",c.triage_level)}${kv("Onderbouwing",(c.fault_evidence||[]).join(" · "))}<div class="kv"><span>Routebron</span><span>${routeLink}</span></div></details>`;
  assignedTo.innerHTML='<option value="">Nog niet toegewezen</option>'+users.filter(user=>user.role==="technician").map(user=>`<option value="${Number(user.id)}" ${Number(c.assigned_to)===Number(user.id)?"selected":""}>${escapeReport(user.display_name)}</option>`).join("");
@@ -273,7 +320,7 @@ async function openCase(id){
  await Promise.all([loadNotes(c.id).catch(error=>{if(current?.id===c.id)notes.innerHTML=emptyState("Notities konden niet worden geladen","Open het dossier opnieuw om het nogmaals te proberen.","message");toast(error.message,"warn")}),loadAttachments(c.id).catch(error=>{if(current?.id===c.id)attachments.innerHTML=emptyState("Bijlagen konden niet worden geladen","Open het dossier opnieuw om het nogmaals te proberen.","file");toast(error.message,"warn")})]);if(current?.id===c.id)updateCasePermissions();
 }
 
-async function saveCase(){if(!requireCaseWrite())return;try{const updated=await api(`/api/cases/${current.id}`,{method:"PATCH",body:JSON.stringify({version:current.version,status:caseStatus.value,score:current.score,facts:current.facts,missing:current.missing,dispatch:current.dispatch})});await loadCases();render();await openCase(updated.id);toast("Je wijzigingen zijn opgeslagen.","good")}catch(error){if(error.status===409){const id=current.id;await loadCases();render();await openCase(id);toast("Dit dossier was intussen gewijzigd. Je ziet nu de nieuwste versie.","warn")}else throw error}}
+async function saveCase(){if(!requireCaseWrite())return;try{const updated=await api(`/api/cases/${current.id}`,{method:"PATCH",body:JSON.stringify({version:current.version,status:caseStatus.value})});await loadCases();render();await openCase(updated.id);toast("Je wijzigingen zijn opgeslagen.","good")}catch(error){if(error.status===409){const id=current.id;await loadCases();render();await openCase(id);toast("Dit dossier was intussen gewijzigd. Je ziet nu de nieuwste versie.","warn")}else throw error}}
 async function assignCase(){if(!requireCaseWrite())return;try{const updated=await api(`/api/cases/${current.id}`,{method:"PATCH",body:JSON.stringify({version:current.version,assigned_to:assignedTo.value?Number(assignedTo.value):null})});await loadCases();render();await openCase(updated.id);toast("De toewijzing is opgeslagen.","good")}catch(error){if(error.status===409){const id=current.id;await loadCases();render();await openCase(id);toast("Dit dossier was intussen gewijzigd. Controleer de nieuwste toewijzing.","warn")}else throw error}}
 async function loadNotes(caseId=current?.id){if(!caseId)return;const rows=await api(`/api/cases/${caseId}/notes`);if(current?.id!==caseId)return;notes.innerHTML=rows.length?rows.map(note=>`<div class="note"><b>${escapeReport(note.display_name)}</b><div>${escapeReport(note.body)}</div><small>${escapeReport(fmtDateTime(note.created_at))}</small></div>`).join(""):emptyState("Nog geen notities","Gebruik dit onderdeel voor relevante context en overdracht binnen je team.","message")}
 async function addNote(){if(!requireCaseWrite())return;let body=noteText.value.trim();if(!body)return;await api(`/api/cases/${current.id}/notes`,{method:"POST",body:JSON.stringify({body})});noteText.value="";await loadNotes();toast("Notitie toegevoegd.","good")}
@@ -634,6 +681,9 @@ startPilot=((original)=>function(...args){return runWorkspaceAction("startPilot"
 closePilot=((original)=>function(...args){return runWorkspaceAction("closePilot",original,args)})(closePilot);
 finishOnboarding=((original)=>function(...args){return runWorkspaceAction("finishOnboarding",original,args)})(finishOnboarding);
 requestPasswordReset=((original)=>function(...args){return runWorkspaceAction("requestPasswordReset",original,args)})(requestPasswordReset);
+previewCaseAnalysis=((original)=>function(...args){return runWorkspaceAction("previewCaseAnalysis",original,args)})(previewCaseAnalysis);
+saveCaseAnalysis=((original)=>function(...args){return runWorkspaceAction("saveCaseAnalysis",original,args)})(saveCaseAnalysis);
+tryAnalysis=((original)=>function(...args){return runWorkspaceAction("tryAnalysis",original,args)})(tryAnalysis);
 
 let fieldsQueued=false;new MutationObserver(()=>{if(!fieldsQueued){fieldsQueued=true;queueMicrotask(()=>{fieldsQueued=false;linkFieldLabels()})}}).observe(document.body,{childList:true,subtree:true});linkFieldLabels();
 window.matchMedia("(min-width: 761px)").addEventListener("change",()=>closeNavigation());
