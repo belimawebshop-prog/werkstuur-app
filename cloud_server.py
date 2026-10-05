@@ -39,7 +39,7 @@ ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "2.0.1-analysis"
+APP_VERSION = "2.0.2-ready"
 APP_BUILD = "2026-10-05"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
@@ -1285,7 +1285,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(rows)
             if path=="/api/export":
                 u=self._need(("admin",))
-                if u:return self._json(export_payload())
+                if u:
+                    headers={"Content-Disposition":f'attachment; filename="werkstuur-export-{date.today().isoformat()}.json"'} if q.get("download",[""])[0]=="1" else None
+                    return self._json(export_payload(),extra_headers=headers)
                 return
             if path=="/api/pilot-reset-summary":
                 u=self._need(("admin",))
