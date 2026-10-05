@@ -33,12 +33,13 @@ from supabase import create_client, Client
 import httpx
 
 import server as core
+import analysis_engine
 
 ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "2.0.0-workspace"
+APP_VERSION = "2.0.1-analysis"
 APP_BUILD = "2026-10-05"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
@@ -788,6 +789,10 @@ def enrich_case(c):
     if c.get("assigned_to"):
         u=find_user(c["assigned_to"])
         c["assigned_name"]=u["display_name"] if u else None
+    try:
+        c["analysis"]=analysis_engine.for_case(c)
+    except (ValueError, TypeError):
+        c["analysis"]={"unavailable":True,"warnings":["Deze oudere melding heeft onvoldoende geldige invoer. Laat de planner de klacht en het installatietype controleren."]}
     return c
 
 def calculate_metrics():
@@ -1198,6 +1203,10 @@ class Handler(BaseHTTPRequestHandler):
                     _reset_supabase_client()
                     return self._json({"ok":False,"name":APP_NAME,"version":APP_VERSION,"backend":"supabase","database":"unavailable"},503)
             if path=="/api/version":return self._json({"name":APP_NAME,"version":APP_VERSION,"build":APP_BUILD})
+            if path=="/api/analysis-status":
+                u=self._need(("admin","planner"))
+                if not u:return
+                return self._json(analysis_engine.self_check())
             if path=="/api/system-status":
                 u=self._need(("admin",))
                 if not u:return
@@ -1404,8 +1413,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not org:return self._json({"error":"invalid token"},403)
                 org_id=org["id"]
                 typ=str(body.get("type","Onbekend"));problem=str(body.get("problem",""));extra=body.get("extra") or {}
-                facts,missing,score,dispatch,prep,fault=core.analyze(typ,problem,extra)
-                brand=core.canonical_brand(extra.get("manufacturer"));src=core.source_for(brand);rk=core.route_knowledge(fault["category"]);fk=core.ftf_knowledge(fault["category"])
+                try:facts,missing,score,dispatch,prep,fault=analysis_engine.analyze(typ,problem,extra)
+                except ValueError as e:return self._json({"error":str(e)},400)
+                extra=analysis_engine.clean_extra(extra)
+                brand=analysis_engine.canonical_brand(extra.get("manufacturer"));src=analysis_engine.source_for(brand);rk=analysis_engine.route_knowledge(fault["category"],typ,brand);fk=core.ftf_knowledge(fault["category"])
                 case_no="WS-"+str(int(time.time()*1000))[-8:]
                 row=first(sb.table("cases").insert({
                     "organization_id":org_id,"case_no":case_no,"source":"customer","customer":str(body.get("customer") or "Nieuwe klant"),
@@ -1460,6 +1471,27 @@ class Handler(BaseHTTPRequestHandler):
             if (path=="/api/cases" or path.startswith("/api/cases/")) and not case_actor_in_organization(u):
                 return self._json({"error":"Je bekijkt deze organisatie als eigenaar. Gebruik een teamaccount van deze organisatie om cases bij te werken.","code":"organization_member_required"},403)
 
+            if path=="/api/analysis-preview":
+                if u["role"] not in ("admin","planner"):return self._json({"error":"forbidden"},403)
+                try:result=analysis_engine.assess(body.get("type"),body.get("problem"),body.get("extra"))
+                except ValueError as e:return self._json({"error":str(e)},400)
+                return self._json(result)
+            if path.startswith("/api/cases/") and path.endswith("/analysis"):
+                if u["role"] not in ("admin","planner"):return self._json({"error":"forbidden"},403)
+                cid=int(path.split("/")[3]);c=get_case(cid)
+                if not can_access_case(u,c):return self._json({"error":"not found"},404)
+                try:expected=int(body.get("version",0))
+                except (ValueError,TypeError):return self._json({"error":"ongeldige dossierversie"},400)
+                if int(c.get("version") or 1)!=expected:return self._json({"error":"version_conflict","remote":enrich_case(c)},409)
+                try:result=analysis_engine.assess(c["type"],body.get("problem",c.get("problem")),body.get("extra"))
+                except ValueError as e:return self._json({"error":str(e)},400)
+                extra=result["observations"]
+                update=analysis_engine.case_fields(result)
+                update.update({"problem":result["problem"],"manufacturer":result["manufacturer"],"model":extra.get("model", ""),"serial_no":extra.get("serial", ""),"asset":" ".join(x for x in (result["manufacturer"],extra.get("model")) if x and x!="Onbekend") or "Nog te identificeren","version":expected+1,"updated_at":now_iso()})
+                row=first(sb.table("cases").update(update).eq("organization_id",current_org_id(required=True)).eq("id",cid).eq("version",expected).execute())
+                if not row:return self._json({"error":"version_conflict","remote":enrich_case(get_case(cid))},409)
+                create_audit(cid,u["id"],"analysis_updated",json.dumps({"engine_version":result["engine_version"],"triage":result["triage_level"]}))
+                return self._json(enrich_case(row))
             if path=="/api/test-email":
                 if u["role"]!="admin":return self._json({"error":"forbidden"},403)
                 if not _mail_configured():return self._json({"error":"de e-mailverbinding is nog niet volledig geconfigureerd"},503)
@@ -1599,8 +1631,10 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/cases":
                 if u["role"] not in ("admin","planner"):return self._json({"error":"forbidden"},403)
                 typ=str(body.get("type","Onbekend"));extra=body.get("extra") or {};problem=str(body.get("problem") or "")
-                facts,missing,score,dispatch,prep,fault=core.analyze(typ,problem,extra)
-                brand=core.canonical_brand(extra.get("manufacturer"));src=core.source_for(brand);rk=core.route_knowledge(fault["category"]);fk=core.ftf_knowledge(fault["category"])
+                try:facts,missing,score,dispatch,prep,fault=analysis_engine.analyze(typ,problem,extra)
+                except ValueError as e:return self._json({"error":str(e)},400)
+                extra=analysis_engine.clean_extra(extra)
+                brand=analysis_engine.canonical_brand(extra.get("manufacturer"));src=analysis_engine.source_for(brand);rk=analysis_engine.route_knowledge(fault["category"],typ,brand);fk=core.ftf_knowledge(fault["category"])
                 row=first(sb.table("cases").insert({
                     "organization_id":current_org_id(required=True),"case_no":"WS-"+str(int(time.time()*1000))[-8:],"source":"planner","customer":body.get("customer") or "Nieuwe klant",
                     "city":body.get("city"),"type":typ,"asset":((brand+" "+str(extra.get("model") or "")).strip() if brand!="Onbekend" else "Nog te identificeren"),
