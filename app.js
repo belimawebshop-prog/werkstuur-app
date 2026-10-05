@@ -506,6 +506,7 @@ function initOnboarding(state){
  let today=new Date(),end=new Date(Date.now()+42*86400000);
  obStart.value=today.toISOString().slice(0,10);
  obEnd.value=end.toISOString().slice(0,10);
+ obCreatePilot.checked=false;toggleOnboardingPilot();
  obResult.classList.add("hidden");obControls.classList.remove("hidden");
  obStep=1;renderObStep();
 }
@@ -522,9 +523,10 @@ function renderObStep(){
  for(let i=1;i<=5;i++)$("obStep"+i).classList.toggle("hidden",i!==obStep);
  obStepNo.textContent=obStep;
  obBack.style.visibility=obStep===1?"hidden":"visible";
- obNext.textContent=obStep===5?"Onboarding afronden":"Volgende →";
+ obNext.textContent=obStep===5?"Startinstellingen opslaan":"Volgende →";
  if(obStep===2)renderBrandChoices();
 }
+function toggleOnboardingPilot(){obPilotFields.classList.toggle("hidden",!obCreatePilot.checked)}
 function obPrev(){if(obStep>1){obStep--;renderObStep()}}
 async function obNext(){
  if(obStep===1){
@@ -569,7 +571,7 @@ async function finishOnboarding(){
      monthly_case_volume:Number(obVolume.value)
    },
    pilot:{
-     create:true,name:obPilotName.value,start_date:obStart.value,end_date:obEnd.value,
+     create:obCreatePilot.checked,name:obPilotName.value,start_date:obStart.value,end_date:obEnd.value,
      baseline_planner_minutes:Number(obBaselinePlanner.value),
      baseline_first_time_fix_pct:Number(obBaseFTF.value),
      baseline_second_visit_pct:Number(obBaseSecond.value),
@@ -588,6 +590,7 @@ async function finishOnboarding(){
    obResult.innerHTML=`<div class="card"><div class="eyebrow">Setup voltooid</div><h3>${escapeReport(r.onboarding.company_name)}</h3><div class="kv"><span>Nieuwe teamaccounts</span><b>${r.team_members_created}</b></div><div class="kv"><span>Servicetypen</span><b>${r.onboarding.enabled_service_types.join(", ")}</b></div><div class="sub">Klant-intakelink:</div><div class="linkbox section">${intake}</div><div class="section"><button class="btn" onclick="navigator.clipboard?.writeText('${intake}')">Link kopiëren</button> <button class="btn primary" onclick="window.open('${intake}','_blank')">Intake testen</button></div></div>`;
    obControls.classList.add("hidden");
    await Promise.all([loadUsers(),loadSettings()]);
+   $("setupBanner")?.classList.toggle("hidden",!!r.onboarding.complete);
    render();
  }catch(e){alert(e.message)}
 }
