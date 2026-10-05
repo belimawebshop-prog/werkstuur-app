@@ -56,13 +56,13 @@
 </header><div class="ws-breadcrumb"><span>Werkstuur</span><svg class="ws-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 12h16m-6-6 6 6-6 6"/></svg><strong id="breadcrumbLabel">Overzicht</strong></div>
 <div class="ws-context-banner hidden" id="ownerContextBanner"><svg class="ws-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg><div>Je bekijkt deze organisatie als Werkstuur-eigenaar. Het teamaccount van deze organisatie werkt de dossiers bij.</div><button class="cc-textbtn" type="button" onclick="show('owner')">Andere omgeving</button></div>
 <section class="hidden" id="onboardingView">
-<div class="top"><div><div class="eyebrow">Launch Partner Setup</div><h2>Onboarding-wizard</h2><div class="sub">Configureer een installatiebedrijf en start de pilot vanuit één scherm.</div></div></div>
+<div class="top"><div><div class="eyebrow">Je werkomgeving</div><h2>Startinstellingen</h2><div class="sub">Maak je eigen omgeving of een klantomgeving klaar voor het dagelijkse werk.</div></div></div>
 <div class="card section">
 <div class="eyebrow">Stap <span id="obStepNo">1</span> van 5</div>
 <div id="obStep1">
 <h3>1. Bedrijf &amp; servicefocus</h3>
-<div class="field"><label>Bedrijfsnaam</label><input autocomplete="organization" id="obCompany" placeholder="Bedrijfsnaam pilotklant"/></div><div class="field"><label>Support e-mail</label><input id="obSupportEmail" placeholder="service@bedrijf.nl" type="email"/></div><div class="field"><label>Privacyverklaring URL</label><input id="obPrivacyUrl" placeholder="https://bedrijf.nl/privacy" type="url"/></div>
-<div class="field"><label>Servicetypen in de pilot</label>
+<div class="field"><label>Bedrijfsnaam</label><input autocomplete="organization" id="obCompany" placeholder="Naam van je bedrijf of klant"/></div><div class="field"><label>Support e-mail</label><input id="obSupportEmail" placeholder="service@bedrijf.nl" type="email"/></div><div class="field"><label>Privacyverklaring URL</label><input id="obPrivacyUrl" placeholder="https://bedrijf.nl/privacy" type="url"/></div>
+<div class="field"><label>Servicetypen in deze omgeving</label>
 <label><input checked="" class="obService" type="checkbox" value="Laadpaal"/> Laadpaal</label><br/>
 <label><input checked="" class="obService" type="checkbox" value="Zonnepanelen"/> Zonnepanelen</label><br/>
 <label><input class="obService" type="checkbox" value="Thuisbatterij"/> Thuisbatterij</label><br/>
@@ -71,7 +71,7 @@
 </div>
 <div class="hidden" id="obStep2">
 <h3>2. Merken</h3>
-<div class="sub">Selecteer waar de pilot op focust. De klantintake gebruikt daarna alleen deze keuzes.</div>
+<div class="sub">Selecteer de merken die je team ondersteunt. Deze keuzes verschijnen in de klantintake.</div>
 <div class="section" id="obBrands"></div>
 </div>
 <div class="hidden" id="obStep3">
@@ -93,7 +93,8 @@
 </div>
 </div>
 <div class="hidden" id="obStep4">
-<h3>4. Businesscase-aannames</h3>
+<h3>4. Aannames voor de berekening</h3>
+<p class="sub">Deze bedragen en aantallen worden gebruikt om resultaten te berekenen. Ze starten geen abonnement of betaling.</p>
 <div class="grid2">
 <div>
 <div class="field"><label>Baseline planner-/intaketijd per case (min)</label><input id="obBaselinePlanner" type="number" value="13"/></div>
@@ -110,7 +111,12 @@
 </div>
 </div>
 <div class="hidden" id="obStep5">
-<h3>5. Nulmeting &amp; pilotdoelen</h3>
+<h3>5. Klaar om te starten</h3>
+<p class="sub">Sla je startinstellingen op. Een meetpilot kun je ook later instellen bij Resultaten.</p>
+<label class="section"><input id="obCreatePilot" type="checkbox" onchange="toggleOnboardingPilot()"/> Ook een meetpilot starten</label>
+<div class="hidden section" id="obPilotFields">
+<h3>Nulmeting &amp; pilotdoelen</h3>
+<p class="sub">Controleer de beginwaarden en doelen voor je meetperiode voordat je de pilot start.</p>
 <div class="grid2">
 <div>
 <div class="field"><label>Pilotnaam</label><input id="obPilotName" value="Launch Partner Pilot"/></div>
@@ -126,6 +132,7 @@
 <div class="field"><label>Doel tweede bezoek (%)</label><input id="obTargetSecond" type="number" value="12"/></div>
 <div class="field"><label>Doel remote opgelost (%)</label><input id="obTargetRemote" type="number" value="10"/></div>
 <div class="field"><label>Scope/notitie</label><textarea id="obPilotNotes">6-weekse pilot met technische servicecases.</textarea></div>
+</div>
 </div>
 </div>
 </div>
@@ -304,7 +311,7 @@
 <button class="cc-managecard" id="manageOnboarding" onclick="openOnboardingFromManage()"><span><svg class="ws-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 11h6M9 15h3M16 17l2 2 4-4"/></svg></span><div><b>Onboarding</b><small>Servicefocus, merken, pilotdoelen en startinstellingen.</small></div><i>→</i></button>
 </div>
 </section>
-<section class="hidden" id="productView"><div class="top"><div><div class="eyebrow">Beheer</div><h2>Productinstellingen</h2><div class="sub">Branding, accounts, export en veilige gegevensreset.</div></div><div><span class="pill" id="versionBadge"></span></div></div><div class="grid2 section"><div class="card"><h3>Branding &amp; klantportaal</h3><div class="field"><label>Productnaam / label</label><input id="pbBrandName"/></div><div class="field"><label>Accentkleur</label><input id="pbAccent" placeholder="#62d0ff" type="text"/></div><div class="field"><label>Support e-mail</label><input id="pbSupportEmail" type="email"/></div><div class="field"><label>Privacyverklaring URL</label><input id="pbPrivacyUrl" placeholder="https://bedrijf.nl/privacy" type="url"/></div><div class="field"><label>Titel klantportaal</label><input id="pbPortalTitle"/></div><button class="btn primary" onclick="saveBranding()">Branding opslaan</button></div><div class="card"><h3>Eigen wachtwoord</h3><div class="field"><label>Huidig wachtwoord</label><input id="pwCurrent" type="password"/></div><div class="field"><label>Nieuw wachtwoord</label><input id="pwNew" placeholder="min. 12 tekens" type="password"/></div><button class="btn" onclick="changeOwnPassword()">Wachtwoord wijzigen</button></div></div><div class="card section" id="accountAdminCard"><h3>Accountbeheer</h3><div id="accountList" class="ws-account-list"></div><div class="section grid2"><div><div class="field"><label>Naam</label><input id="accName"/></div><div class="field"><label>E-mail</label><input id="accEmail" type="email"/></div></div><div><div class="field"><label>Rol</label><select id="accRole"><option value="planner">Planner</option><option value="technician">Monteur</option><option value="admin">Beheerder / directie</option></select></div><div class="field"><label>Tijdelijk wachtwoord</label><input id="accPassword" placeholder="min. 12 tekens" type="password"/></div></div></div><button class="btn primary" onclick="createAccount()">Account toevoegen</button></div><div class="grid2 section"><div class="card"><h3>Export &amp; herstelgegevens</h3><div class="sub">Operationele JSON-export zonder wachtwoordhashes en zonder bestandbytes.</div><div class="section"><button class="btn primary" onclick="downloadOperationalExport()">JSON-export downloaden</button></div></div><details class="ws-danger"><summary><svg class="ws-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 10 17H2zM12 9v4M12 17h.01"/></svg>Gegevensreset</summary><div class="ws-danger-body"><h3>Pilotgegevens wissen</h3><div class="sub">Verwijdert cases, notities, bijlagen, audit en pilotdata. Accounts en bedrijfsinstellingen blijven bestaan.</div><div class="field"><label>Typ exact: RESET PILOT DATA</label><input id="resetConfirm"/></div><button class="btn btn-danger" onclick="resetPilotData()">Pilotdata resetten</button></div></details></div></section>
+<section class="hidden" id="productView"><div class="top"><div><div class="eyebrow">Beheer</div><h2>Productinstellingen</h2><div class="sub">Branding, accounts, export en veilige gegevensreset.</div></div><div><span class="pill" id="versionBadge"></span></div></div><div class="grid2 section"><div class="card"><h3>Branding &amp; klantportaal</h3><div class="field"><label>Productnaam / label</label><input id="pbBrandName"/></div><div class="field"><label>Accentkleur</label><input id="pbAccent" placeholder="#62d0ff" type="text"/></div><div class="field"><label>Support e-mail</label><input id="pbSupportEmail" type="email"/></div><div class="field"><label>Privacyverklaring URL</label><input id="pbPrivacyUrl" placeholder="https://bedrijf.nl/privacy" type="url"/></div><div class="field"><label>Titel klantportaal</label><input id="pbPortalTitle"/></div><button class="btn primary" onclick="saveBranding()">Branding opslaan</button></div><div class="card"><h3>Eigen wachtwoord</h3><div class="field"><label>Huidig wachtwoord</label><input id="pwCurrent" type="password"/></div><div class="field"><label>Nieuw wachtwoord</label><input id="pwNew" placeholder="min. 12 tekens" type="password"/></div><button class="btn" onclick="changeOwnPassword()">Wachtwoord wijzigen</button></div></div><div class="card section" id="accountAdminCard"><h3>Accountbeheer</h3><div id="accountList" class="ws-account-list"></div><div class="section grid2"><div><div class="field"><label>Naam</label><input id="accName"/></div><div class="field"><label>E-mail</label><input id="accEmail" type="email"/></div></div><div><div class="field"><label>Rol</label><select id="accRole"><option value="planner">Planner</option><option value="technician">Monteur</option><option value="admin">Beheerder / directie</option></select></div><div class="field"><label>Tijdelijk wachtwoord</label><input id="accPassword" placeholder="min. 12 tekens" type="password"/></div></div></div><button class="btn primary" onclick="createAccount()">Account toevoegen</button></div><div class="grid2 section"><div class="card"><h3>Export &amp; herstelgegevens</h3><div class="sub">Operationele JSON-export zonder wachtwoordhashes en zonder bestandbytes.</div><div class="section"><a class="btn primary" href="/api/export?download=1" download>JSON-export downloaden</a></div></div><details class="ws-danger"><summary><svg class="ws-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 10 17H2zM12 9v4M12 17h.01"/></svg>Gegevensreset</summary><div class="ws-danger-body"><h3>Pilotgegevens wissen</h3><div class="sub">Verwijdert cases, notities, bijlagen, audit en pilotdata. Accounts en bedrijfsinstellingen blijven bestaan.</div><div class="field"><label>Typ exact: RESET PILOT DATA</label><input id="resetConfirm"/></div><button class="btn btn-danger" onclick="resetPilotData()">Pilotdata resetten</button></div></details></div></section>
 <section class="hidden" id="systemView">
 <div class="top">
 <div>
