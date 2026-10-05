@@ -523,7 +523,7 @@ function renderObStep(){
  for(let i=1;i<=5;i++)$("obStep"+i).classList.toggle("hidden",i!==obStep);
  obStepNo.textContent=obStep;
  obBack.style.visibility=obStep===1?"hidden":"visible";
- obNext.textContent=obStep===5?"Startinstellingen opslaan":"Volgende →";
+ $("obNext").textContent=obStep===5?"Startinstellingen opslaan":"Volgende →";
  if(obStep===2)renderBrandChoices();
 }
 function toggleOnboardingPilot(){obPilotFields.classList.toggle("hidden",!obCreatePilot.checked)}
