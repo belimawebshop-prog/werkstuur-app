@@ -1,5 +1,11 @@
 let token=null,me=null,cases=[],users=[],current=null,settings=null,attachmentFiles=[],systemTimer=null,ownerOrganizations=[],passwordResetToken=new URLSearchParams(location.search).get("reset")||"";
 const $=id=>document.getElementById(id);
+function caseWriteAllowed(){return !!me && !!me.organization_id && (me.base_organization_id??me.organization_id)===me.organization_id}
+function requireCaseWrite(){
+ if(caseWriteAllowed())return true;
+ toast("Je bekijkt deze organisatie als eigenaar. Gebruik een teamaccount van deze organisatie om cases bij te werken.","warn");
+ return false;
+}
 function toast(message,type=""){
  const stack=$("toastStack");
  if(!stack){console.log(message);return}
@@ -259,10 +265,10 @@ function render(){
 }
 function renderTeam(){teamList.innerHTML=`<div class="row head"><div>Naam</div><div>E-mail</div><div>Rol</div><div></div><div></div></div>`+users.map(u=>`<div class="row"><div>${escapeReport(u.display_name)}</div><div>${escapeReport(u.email)}</div><div>${escapeReport(u.role)}</div><div></div><div></div></div>`).join("")}
 function renderWorkorders(){workorders.innerHTML=cases.length?cases.map(c=>`<div class="card section" onclick="openCase(${Number(c.id)})" style="cursor:pointer"><div class="eyebrow">${escapeReport(c.case_no)}</div><h3>${escapeReport(c.customer)} · ${escapeReport(c.type)}</h3><div class="kv"><span>Merk/model</span><span>${escapeReport([c.manufacturer,c.model].filter(Boolean).join(' ')||c.asset||'Onbekend')}</span></div><div class="kv"><span>Locatie</span><span>${escapeReport(c.city||"")}</span></div><div class="kv"><span>Klacht</span><span>${escapeReport(c.problem||"")}</span></div><div class="kv"><span>Werkadvies</span><span>${escapeReport(c.dispatch||"")}</span></div>${(c.prep||[]).map(x=>`<div class="check">✓ ${escapeReport(x)}</div>`).join("")}</div>`).join(""):`<div class="sub">Geen toegewezen werkorders.</div>`}
-function openNew(){newModal.classList.remove("hidden")}
+function openNew(){if(!requireCaseWrite())return;newModal.classList.remove("hidden")}
 function plannerBrands(){let opts=nType.value==="Laadpaal"?["Easee","Alfen","Wallbox","Zaptec","Anders/onbekend"]:nType.value==="Zonnepanelen"?["SolarEdge","GoodWe","Growatt","SMA","Enphase","Anders/onbekend"]:nType.value==="Thuisbatterij"?["SolarEdge","GoodWe","BYD","Huawei","Tesla","Anders/onbekend"]:["Anders/onbekend"];nManufacturer.innerHTML=opts.map(x=>`<option>${x}</option>`).join("")}
 plannerBrands();
-async function createCase(){let c=await api("/api/cases",{method:"POST",body:JSON.stringify({customer:nCustomer.value,city:nCity.value,type:nType.value,asset:"Nog te identificeren",problem:nProblem.value,extra:{manufacturer:nManufacturer.value,model:nModel.value,serial:nSerial.value}})});newModal.classList.add("hidden");await loadCases();render();toast("Case aangemaakt.","good");openCase(c.id)}
+async function createCase(){if(!requireCaseWrite())return;let c=await api("/api/cases",{method:"POST",body:JSON.stringify({customer:nCustomer.value,city:nCity.value,type:nType.value,asset:"Nog te identificeren",problem:nProblem.value,extra:{manufacturer:nManufacturer.value,model:nModel.value,serial:nSerial.value}})});newModal.classList.add("hidden");await loadCases();render();toast("Case aangemaakt.","good");openCase(c.id)}
 async function openCase(id){
  current=cases.find(c=>c.id===id);if(!current)return;
  const sourceLink=current.knowledge_url?`<a href="${safeHref(current.knowledge_url)}" target="_blank" rel="noopener noreferrer" style="color:#1684b8">${escapeReport(current.knowledge_title||"OEM documentatie")}</a>`:escapeReport(current.knowledge_title||"Generiek");
@@ -274,12 +280,12 @@ async function openCase(id){
  assignedTo.innerHTML=`<option value="">Niet toegewezen</option>`+users.filter(u=>u.role==="technician").map(u=>`<option value="${Number(u.id)}" ${current.assigned_to===u.id?"selected":""}>${escapeReport(u.display_name)}</option>`).join("");
  assignBtn.style.display=me.role==="technician"?"none":"";assignedTo.disabled=me.role==="technician";await Promise.all([loadNotes(),loadAttachments()]);renderOutcome();show("case")
 }
-async function saveCase(){try{let d=await api(`/api/cases/${current.id}`,{method:"PATCH",body:JSON.stringify({version:current.version,status:caseStatus.value,score:current.score,facts:current.facts,missing:current.missing,dispatch:current.dispatch})});current=d;await loadCases();render();await openCase(current.id);toast("Case bijgewerkt.","good")}catch(e){if(e.status===409){alert("Conflict: deze case is ondertussen gewijzigd. De nieuwste versie wordt geladen.");await loadCases();render();openCase(current.id)}else alert(e.message)}}
-async function assignCase(){try{let d=await api(`/api/cases/${current.id}`,{method:"PATCH",body:JSON.stringify({version:current.version,assigned_to:assignedTo.value?Number(assignedTo.value):null})});current=d;await loadCases();render();await openCase(current.id);toast("Toewijzing bijgewerkt.","good")}catch(e){alert(e.message)}}
+async function saveCase(){if(!requireCaseWrite())return;try{let d=await api(`/api/cases/${current.id}`,{method:"PATCH",body:JSON.stringify({version:current.version,status:caseStatus.value,score:current.score,facts:current.facts,missing:current.missing,dispatch:current.dispatch})});current=d;await loadCases();render();await openCase(current.id);toast("Case bijgewerkt.","good")}catch(e){if(e.status===409){alert("Conflict: deze case is ondertussen gewijzigd. De nieuwste versie wordt geladen.");await loadCases();render();openCase(current.id)}else alert(e.message)}}
+async function assignCase(){if(!requireCaseWrite())return;try{let d=await api(`/api/cases/${current.id}`,{method:"PATCH",body:JSON.stringify({version:current.version,assigned_to:assignedTo.value?Number(assignedTo.value):null})});current=d;await loadCases();render();await openCase(current.id);toast("Toewijzing bijgewerkt.","good")}catch(e){alert(e.message)}}
 async function loadNotes(){let n=await api(`/api/cases/${current.id}/notes`);notes.innerHTML=n.length?n.map(x=>`<div class="note"><b>${escapeReport(x.display_name)}</b><div>${escapeReport(x.body)}</div><small>${escapeReport(new Date(x.created_at).toLocaleString("nl-NL"))}</small></div>`).join(""):`<div class="sub">Geen notities.</div>`}
-async function addNote(){let body=noteText.value.trim();if(!body)return;await api(`/api/cases/${current.id}/notes`,{method:"POST",body:JSON.stringify({body})});noteText.value="";await loadNotes();toast("Notitie toegevoegd.","good")}
+async function addNote(){if(!requireCaseWrite())return;let body=noteText.value.trim();if(!body)return;await api(`/api/cases/${current.id}/notes`,{method:"POST",body:JSON.stringify({body})});noteText.value="";await loadNotes();toast("Notitie toegevoegd.","good")}
 async function loadAttachments(){attachmentFiles=await api(`/api/cases/${current.id}/attachments`);attachments.innerHTML=attachmentFiles.length?attachmentFiles.map(x=>`<div class="attachment"><b>${escapeReport(x.filename)}</b><small>${Math.round(Number(x.size_bytes||0)/1024)} KB</small><div><button class="btn" onclick="downloadAttachment(${Number(x.id)})">Open</button></div></div>`).join(""):`<div class="sub">Geen bijlagen.</div>`}
-async function uploadFile(){let f=fileInput.files[0];if(!f)return;let b64=await new Promise((res,rej)=>{let r=new FileReader();r.onload=()=>res(String(r.result).split(",")[1]);r.onerror=rej;r.readAsDataURL(f)});await api(`/api/cases/${current.id}/attachments`,{method:"POST",body:JSON.stringify({filename:f.name,content_type:f.type||"application/octet-stream",data_base64:b64})});fileInput.value="";await loadAttachments();toast("Bijlage toegevoegd.","good")}
+async function uploadFile(){if(!requireCaseWrite())return;let f=fileInput.files[0];if(!f)return;let b64=await new Promise((res,rej)=>{let r=new FileReader();r.onload=()=>res(String(r.result).split(",")[1]);r.onerror=rej;r.readAsDataURL(f)});await api(`/api/cases/${current.id}/attachments`,{method:"POST",body:JSON.stringify({filename:f.name,content_type:f.type||"application/octet-stream",data_base64:b64})});fileInput.value="";await loadAttachments();toast("Bijlage toegevoegd.","good")}
 async function downloadAttachment(id){let meta=attachmentFiles.find(x=>x.id===id),name=meta?.filename||"bestand";let r=await fetch(`/api/attachments/${id}`,{credentials:"same-origin"});if(!r.ok)return alert("Bestand kon niet worden geopend.");let b=await r.blob(),u=URL.createObjectURL(b),a=document.createElement("a");a.href=u;a.download=name;a.rel="noopener";a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
 
 function renderOutcome(){
@@ -295,7 +301,7 @@ function renderOutcome(){
  oPlannerMinutes.value=current.outcome_planner_minutes??"";
  oNotes.value=current.outcome_notes||"";
 }
-async function saveOutcome(){
+async function saveOutcome(){if(!requireCaseWrite())return;
  if(oResolved.checked && oSecond.checked && !confirm("Je hebt zowel 'in één bezoek opgelost' als 'tweede bezoek nodig' aangevinkt. Toch opslaan?"))return;
  current=await api(`/api/cases/${current.id}/outcome`,{method:"POST",body:JSON.stringify({
    resolved_first_visit:oResolved.checked,

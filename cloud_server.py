@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "1.4.2-upload-fix"
+APP_VERSION = "1.4.3-org-context"
 APP_BUILD = "2026-10-05"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
@@ -770,6 +770,10 @@ def can_access_case(user, case):
         return True
     return case.get("assigned_to") == user["id"]
 
+def case_actor_in_organization(user):
+    org_id = user.get("organization_id")
+    return bool(org_id) and user.get("base_organization_id", org_id) == org_id
+
 def visible_cases(user):
     q = sb.table("cases").select("*").eq("organization_id",current_org_id(required=True)).order("updated_at", desc=True)
     if user["role"] == "technician":
@@ -1452,6 +1456,9 @@ class Handler(BaseHTTPRequestHandler):
             u=self._need()
             if not u:return
 
+            if (path=="/api/cases" or path.startswith("/api/cases/")) and not case_actor_in_organization(u):
+                return self._json({"error":"Je bekijkt deze organisatie als eigenaar. Gebruik een teamaccount van deze organisatie om cases bij te werken.","code":"organization_member_required"},403)
+
             if path=="/api/test-email":
                 if u["role"]!="admin":return self._json({"error":"forbidden"},403)
                 if not _mail_configured():return self._json({"error":"de e-mailverbinding is nog niet volledig geconfigureerd"},503)
@@ -1652,6 +1659,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path=urlparse(self.path).path;body=self._body();u=self._need()
             if not u:return
+            if (path=="/api/cases" or path.startswith("/api/cases/")) and not case_actor_in_organization(u):
+                return self._json({"error":"Je bekijkt deze organisatie als eigenaar. Gebruik een teamaccount van deze organisatie om cases bij te werken.","code":"organization_member_required"},403)
             if path.startswith("/api/owner/organizations/"):
                 if not u.get("is_platform_owner"):return self._json({"error":"forbidden"},403)
                 oid=int(path.split("/")[4])
