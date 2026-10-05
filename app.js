@@ -104,7 +104,7 @@ function show(v,refresh=true){
  Promise.resolve(task).catch(error=>toast(error.message||"De gegevens konden niet worden geladen.","warn"));
 }
 
-document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>show(b.dataset.view));
+document.querySelectorAll(".cc-nav button[data-view]").forEach(b=>b.onclick=()=>show(b.dataset.view));
 document.addEventListener("keydown",e=>{
  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){if(!me)return;e.preventDefault();openWorkspaceSearch();return}
  if(e.key==="/"&&me&&!/input|textarea|select/i.test(document.activeElement?.tagName||"")){e.preventDefault();openWorkspaceSearch()}
