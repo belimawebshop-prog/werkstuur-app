@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "2.0.3-refined"
+APP_VERSION = "2.1.0-command"
 APP_BUILD = "2026-10-05"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
@@ -975,6 +975,8 @@ def export_payload():
         "organization":organization_by_id(org_id),
         "settings":resp_data(sb.table("organization_settings").select("key,value").eq("organization_id",org_id).execute()),
         "users":resp_data(sb.table("users").select("id,email,display_name,role,active,created_at").eq("organization_id",org_id).execute()),
+        "customers":resp_data(sb.table("customer_records").select("*").eq("organization_id",org_id).execute()),
+        "support_tickets":resp_data(sb.table("support_tickets").select("id,organization_id,created_by,ticket_no,subject,description,category,status,resolution,version,created_at,updated_at,resolved_at").eq("organization_id",org_id).execute()),
         "pilots":resp_data(sb.table("pilots").select("*").eq("organization_id",org_id).execute()),
         "pilot_snapshots":resp_data(sb.table("pilot_snapshots").select("*").eq("organization_id",org_id).execute()),
         "cases":resp_data(sb.table("cases").select("*").eq("organization_id",org_id).execute()),
@@ -990,7 +992,10 @@ def create_team_user(email,name,role,password):
     if role not in ("admin","planner","technician"):raise ValueError("ongeldige rol")
     if not password or len(password)<12:raise ValueError("wachtwoord minimaal 12 tekens")
     existing=find_user_by_email(email)
-    if existing:return existing,False
+    if existing:
+        if existing.get("organization_id") != current_org_id(required=True):
+            raise ValueError("dit e-mailadres is al in gebruik")
+        return existing,False
     row=first(sb.table("users").insert({
         "email":email,"display_name":name,"role":role,"organization_id":current_org_id(required=True),"is_platform_owner":False,
         "password_hash":core.hash_password(password),"active":True,"created_at":now_iso()
@@ -1014,6 +1019,7 @@ def initialize_organization_settings(org_id, name, support_email="", privacy_url
         elif item["key"]=="brand_name": value="Werkstuur"
         elif item["key"]=="support_email": value=support_email or ""
         elif item["key"]=="privacy_url": value=privacy_url or ""
+        elif item["key"]=="software_monthly_cost": value="0"
         rows.append({"organization_id":org_id,"key":item["key"],"value":str(value)})
     if rows:
         sb.table("organization_settings").upsert(rows,on_conflict="organization_id,key").execute()
@@ -1057,6 +1063,13 @@ def create_organization(body):
         raise ValueError("ongeldig support e-mailadres")
     if privacy and not re.match(r"^https?://",privacy,re.I):
         raise ValueError("ongeldige privacy-URL")
+    admin_email=str(body.get("admin_email") or "").lower().strip()
+    admin_name=str(body.get("admin_name") or "").strip()
+    admin_password=str(body.get("admin_password") or "")
+    if not _valid_email(admin_email):raise ValueError("geldig beheerder e-mailadres verplicht")
+    if not admin_name:raise ValueError("beheerdernaam verplicht")
+    if len(admin_password)<12:raise ValueError("tijdelijk beheerderwachtwoord minimaal 12 tekens")
+    if find_user_by_email(admin_email):raise ValueError("e-mailadres bestaat al")
     org=first(sb.table("organizations").insert({
         "name":name,"slug":slug,"status":status,"plan":plan,
         "support_email":support or None,"privacy_url":privacy or None,
@@ -1064,25 +1077,108 @@ def create_organization(body):
     }).execute())
     initialize_organization_settings(org["id"],name,support,privacy)
 
-    admin_email=str(body.get("admin_email") or "").lower().strip()
-    admin_name=str(body.get("admin_name") or "").strip()
-    admin_password=str(body.get("admin_password") or "")
-    if admin_email or admin_name or admin_password:
-        if not admin_email or "@" not in admin_email:
-            raise ValueError("geldig admin e-mailadres verplicht")
-        if not admin_name:
-            raise ValueError("adminnaam verplicht")
-        if len(admin_password)<12:
-            raise ValueError("tijdelijk adminwachtwoord minimaal 12 tekens")
-        if find_user_by_email(admin_email):
-            raise ValueError("e-mailadres bestaat al")
-        admin_row=first(sb.table("users").insert({
-            "email":admin_email,"display_name":admin_name,"role":"admin",
-            "organization_id":org["id"],"is_platform_owner":False,
-            "password_hash":core.hash_password(admin_password),"active":True,"created_at":now_iso()
-        }).execute())
-        queue_account_welcome(admin_row)
+    admin_row=first(sb.table("users").insert({
+        "email":admin_email,"display_name":admin_name,"role":"admin",
+        "organization_id":org["id"],"is_platform_owner":False,
+        "password_hash":core.hash_password(admin_password),"active":True,"created_at":now_iso()
+    }).execute())
+    queue_account_welcome(admin_row)
     return org
+
+
+def organization_write_path(path):
+    return (path.startswith(("/api/accounts", "/api/customers", "/api/cases", "/api/pilot"))
+            or path in ("/api/settings", "/api/onboarding"))
+
+
+def clean_customer(body, partial=False):
+    fields={"name":160,"email":254,"phone":60,"address":240,"postal_code":30,"city":100,"notes":3000}
+    if set(body)-set(fields)-{"version","active"}:raise ValueError("onbekend klantveld")
+    clean={}
+    for field,limit in fields.items():
+        if partial and field not in body:continue
+        value=str(body.get(field) or "").strip()
+        if len(value)>limit:raise ValueError(f"{field}: maximaal {limit} tekens")
+        clean[field]=value
+    if (not partial or "name" in body) and not clean.get("name"):raise ValueError("klantnaam verplicht")
+    if clean.get("email") and not _valid_email(clean["email"]):raise ValueError("ongeldig e-mailadres")
+    if "email" in clean:clean["email"]=clean["email"].lower()
+    if "active" in body:
+        if not isinstance(body["active"],bool):raise ValueError("ongeldige klantstatus")
+        clean["active"]=body["active"]
+    return clean
+
+
+def customer_by_id(customer_id):
+    return first(sb.table("customer_records").select("*").eq("organization_id",current_org_id(required=True)).eq("id",int(customer_id)).limit(1).execute())
+
+
+def update_team_account(actor, uid, body):
+    if set(body)-{"display_name","role","active"}:raise ValueError("onbekend accountveld")
+    target=first(sb.table("users").select("*").eq("organization_id",current_org_id(required=True)).eq("id",uid).limit(1).execute())
+    if not target:raise LookupError("account niet gevonden")
+    if target.get("is_platform_owner"):raise PermissionError("het eigenaarsaccount wordt niet via klantbeheer gewijzigd")
+    update={}
+    if "display_name" in body:
+        name=str(body["display_name"] or "").strip()
+        if not name or len(name)>160:raise ValueError("naam verplicht, maximaal 160 tekens")
+        update["display_name"]=name
+    if "role" in body:
+        if body["role"] not in ("admin","planner","technician"):raise ValueError("ongeldige rol")
+        update["role"]=body["role"]
+    if "active" in body:
+        if not isinstance(body["active"],bool):raise ValueError("ongeldige accountstatus")
+        update["active"]=body["active"]
+    if uid==actor["id"] and (update.get("active") is False or update.get("role",target["role"])!="admin"):
+        raise ValueError("je eigen beheerderstoegang moet actief blijven")
+    losing_admin=target["role"]=="admin" and target.get("active") and (update.get("active") is False or update.get("role","admin")!="admin")
+    if losing_admin:
+        admins=resp_data(sb.table("users").select("id").eq("organization_id",current_org_id(required=True)).eq("role","admin").eq("active",True).execute())
+        if len(admins)<=1:raise ValueError("minstens één actieve bedrijfsbeheerder is verplicht")
+    if not update:return {k:v for k,v in target.items() if k!="password_hash"}
+    row=first(sb.table("users").update(update).eq("organization_id",current_org_id(required=True)).eq("id",uid).execute())
+    if update.get("role",target["role"])!=target["role"] or update.get("active") is False:
+        sb.table("sessions").delete().eq("user_id",uid).execute()
+    create_audit(None,actor["id"],"account_updated",json.dumps({"target_user_id":uid,"changes":update}))
+    return {k:v for k,v in row.items() if k!="password_hash"}
+
+
+def support_tickets_payload(user, owner=False):
+    query=sb.table("support_tickets").select("*")
+    if not owner:
+        query=query.eq("organization_id",current_org_id(required=True))
+        if user["role"]=="technician":query=query.eq("created_by",user["id"])
+    rows=resp_data(query.order("created_at",desc=True).execute())
+    if owner:
+        organizations={o["id"]:o["name"] for o in resp_data(sb.table("organizations").select("id,name").execute())}
+        for row in rows:row["organization_name"]=organizations.get(row["organization_id"],"Klantbedrijf")
+    for row in rows:
+        row.pop("request_key",None);row.pop("fingerprint",None)
+    return rows
+
+
+def create_support_ticket(user, body):
+    if not case_actor_in_organization(user):raise PermissionError("gebruik het eigen teamaccount om een melding te maken")
+    subject=str(body.get("subject") or "").strip();description=str(body.get("description") or "").strip()
+    category=body.get("category");request_key=str(body.get("request_key") or "")
+    if not 4<=len(subject)<=180:raise ValueError("onderwerp: 4 tot 180 tekens")
+    if not 10<=len(description)<=6000:raise ValueError("omschrijving: 10 tot 6000 tekens")
+    if category not in ("technical","question","incident"):raise ValueError("ongeldige categorie")
+    if not re.fullmatch(r"[a-zA-Z0-9-]{16,80}",request_key):raise ValueError("ongeldige aanvraagcode")
+    org_id=current_org_id(required=True)
+    fingerprint=hashlib.sha256(json.dumps([subject,description,category],ensure_ascii=False).encode()).hexdigest()
+    existing=first(sb.table("support_tickets").select("*").eq("organization_id",org_id).eq("created_by",user["id"]).eq("request_key",request_key).limit(1).execute())
+    if existing:
+        if existing["fingerprint"]!=fingerprint:raise ValueError("deze aanvraagcode is al gebruikt; open een nieuwe melding")
+        row=existing;created=False
+    else:
+        row=first(sb.table("support_tickets").insert({
+            "organization_id":org_id,"created_by":user["id"],"ticket_no":"WS-SUP-"+secrets.token_hex(5).upper(),
+            "subject":subject,"description":description,"category":category,"status":"open","resolution":"",
+            "version":1,"request_key":request_key,"fingerprint":fingerprint,"created_at":now_iso(),"updated_at":now_iso()
+        }).execute());created=True
+        create_audit(None,user["id"],"support_ticket_created",row["ticket_no"])
+    return {k:v for k,v in row.items() if k not in ("request_key","fingerprint")},created
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1185,6 +1281,7 @@ class Handler(BaseHTTPRequestHandler):
     def _static(self,path):
         if path=="/":path="/index.html"
         public_files = {"/index.html", "/intake.html", "/app.js", "/workspace-v200.css",
+                        "/command-v210.css", "/command-v210.js",
                         "/analysis-ui-v201.css", "/refinements-v203.js", "/refinements-v203.css",
                         "/intake-ui-v200.js", "/manifest.webmanifest", "/apple-touch-icon.png",
                         "/icon-192.png", "/icon-512.png"}
@@ -1226,6 +1323,14 @@ class Handler(BaseHTTPRequestHandler):
                 u=self._need_owner()
                 if not u:return
                 return self._json(owner_organizations_payload())
+            if path=="/api/owner/support":
+                u=self._need_owner()
+                if not u:return
+                return self._json(support_tickets_payload(u,owner=True))
+            if path=="/api/support":
+                u=self._need()
+                if not u:return
+                return self._json(support_tickets_payload(u))
             if path=="/api/me":
                 u=self._need()
                 if u:return self._json(u)
@@ -1251,8 +1356,12 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/api/users","/api/accounts"):
                 u=self._need(("admin","planner") if path=="/api/users" else ("admin",))
                 if not u:return
-                rows=resp_data(sb.table("users").select("id,email,display_name,role,active,created_at").eq("organization_id",current_org_id(required=True)).order("role").order("display_name").execute())
+                rows=resp_data(sb.table("users").select("id,email,display_name,role,active,created_at,is_platform_owner").eq("organization_id",current_org_id(required=True)).order("role").order("display_name").execute())
                 return self._json(rows)
+            if path=="/api/customers":
+                u=self._need(("admin","planner"))
+                if not u:return
+                return self._json(resp_data(sb.table("customer_records").select("*").eq("organization_id",current_org_id(required=True)).order("name").execute()))
             if path=="/api/cases":
                 u=self._need()
                 if not u:return
@@ -1488,8 +1597,20 @@ class Handler(BaseHTTPRequestHandler):
             u=self._need()
             if not u:return
 
-            if (path=="/api/cases" or path.startswith("/api/cases/")) and not case_actor_in_organization(u):
+            if organization_write_path(path) and not case_actor_in_organization(u):
                 return self._json({"error":"Je bekijkt deze organisatie als eigenaar. Gebruik een teamaccount van deze organisatie om cases bij te werken.","code":"organization_member_required"},403)
+            if path=="/api/support":
+                try:row,created=create_support_ticket(u,body)
+                except PermissionError as e:return self._json({"error":str(e)},403)
+                except ValueError as e:return self._json({"error":str(e)},400)
+                return self._json(row,201 if created else 200)
+            if path=="/api/customers":
+                if u["role"] not in ("admin","planner"):return self._json({"error":"forbidden"},403)
+                try:values=clean_customer(body)
+                except ValueError as e:return self._json({"error":str(e)},400)
+                row=first(sb.table("customer_records").insert({**values,"organization_id":current_org_id(required=True),"active":True,"version":1,"created_at":now_iso(),"updated_at":now_iso()}).execute())
+                create_audit(None,u["id"],"customer_created",str(row["id"]))
+                return self._json(row,201)
 
             if path=="/api/analysis-preview":
                 if u["role"] not in ("admin","planner"):return self._json({"error":"forbidden"},403)
@@ -1540,6 +1661,7 @@ class Handler(BaseHTTPRequestHandler):
                 uid=int(path.split("/")[3])
                 target=first(sb.table("users").select("*").eq("organization_id",current_org_id(required=True)).eq("id",uid).limit(1).execute())
                 if not target:return self._json({"error":"account niet gevonden"},404)
+                if target.get("is_platform_owner"):return self._json({"error":"gebruik het eigen eigenaarsaccount voor wachtwoordherstel"},403)
                 if not _mail_configured():return self._json({"error":"transactionele e-mail is nog niet geconfigureerd"},503)
                 queued=queue_password_reset(target)
                 if queued:create_audit(None,u["id"],"password_reset_link_sent",str(uid))
@@ -1550,13 +1672,14 @@ class Handler(BaseHTTPRequestHandler):
                 if len(new)<12:return self._json({"error":"nieuw wachtwoord minimaal 12 tekens"},400)
                 target=first(sb.table("users").select("*").eq("organization_id",current_org_id(required=True)).eq("id",uid).limit(1).execute())
                 if not target:return self._json({"error":"account niet gevonden"},404)
+                if target.get("is_platform_owner"):return self._json({"error":"gebruik het eigen eigenaarsaccount voor wachtwoordherstel"},403)
                 sb.table("users").update({"password_hash":core.hash_password(new)}).eq("organization_id",current_org_id(required=True)).eq("id",uid).execute()
                 sb.table("sessions").delete().eq("user_id",uid).execute()
                 create_audit(None,u["id"],"admin_password_reset",str(uid))
                 queue_password_changed_notice(target,by_admin=True)
                 return self._json({"ok":True})
             if path=="/api/onboarding":
-                if u["role"] not in ("admin","planner"):return self._json({"error":"forbidden"},403)
+                if u["role"]!="admin":return self._json({"error":"forbidden"},403)
                 company=str(body.get("company_name") or "").strip()
                 service_types=[x for x in body.get("enabled_service_types",[]) if x in ("Laadpaal","Zonnepanelen","Thuisbatterij","Elektro")]
                 if not company or not service_types:return self._json({"error":"bedrijfsnaam en servicetype verplicht"},400)
@@ -1650,6 +1773,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok":True})
             if path=="/api/cases":
                 if u["role"] not in ("admin","planner"):return self._json({"error":"forbidden"},403)
+                customer=None
+                if body.get("customer_id") is not None:
+                    try:customer=customer_by_id(body["customer_id"])
+                    except (TypeError,ValueError):return self._json({"error":"ongeldige klant"},400)
+                    if not customer or not customer.get("active"):return self._json({"error":"klant niet gevonden"},404)
                 typ=str(body.get("type","Onbekend"));extra=body.get("extra") or {};problem=str(body.get("problem") or "")
                 try:facts,missing,score,dispatch,prep,fault=analysis_engine.analyze(typ,problem,extra)
                 except ValueError as e:return self._json({"error":str(e)},400)
@@ -1657,7 +1785,7 @@ class Handler(BaseHTTPRequestHandler):
                 brand=analysis_engine.canonical_brand(extra.get("manufacturer"));src=analysis_engine.source_for(brand);rk=analysis_engine.route_knowledge(fault["category"],typ,brand);fk=core.ftf_knowledge(fault["category"])
                 row=first(sb.table("cases").insert({
                     "organization_id":current_org_id(required=True),"case_no":"WS-"+str(int(time.time()*1000))[-8:],"source":"planner","customer":body.get("customer") or "Nieuwe klant",
-                    "city":body.get("city"),"type":typ,"asset":((brand+" "+str(extra.get("model") or "")).strip() if brand!="Onbekend" else "Nog te identificeren"),
+                    "city":body.get("city"),"phone":body.get("phone"),"email":body.get("email"),"customer_id":customer["id"] if customer else None,"type":typ,"asset":((brand+" "+str(extra.get("model") or "")).strip() if brand!="Onbekend" else "Nog te identificeren"),
                     "status":"Review" if not missing else "Info ontbreekt","score":score,"problem":problem,"facts":facts,"missing":missing,"dispatch":dispatch,"prep":prep,
                     "assigned_to":body.get("assigned_to"),"created_by":u["id"],"version":1,"created_at":now_iso(),"updated_at":now_iso(),
                     "manufacturer":brand,"model":str(extra.get("model") or ""),"serial_no":str(extra.get("serial") or ""),
@@ -1714,8 +1842,37 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path=urlparse(self.path).path;body=self._body();u=self._need()
             if not u:return
-            if (path=="/api/cases" or path.startswith("/api/cases/")) and not case_actor_in_organization(u):
+            if organization_write_path(path) and not case_actor_in_organization(u):
                 return self._json({"error":"Je bekijkt deze organisatie als eigenaar. Gebruik een teamaccount van deze organisatie om cases bij te werken.","code":"organization_member_required"},403)
+            if path.startswith("/api/owner/support/"):
+                if not u.get("is_platform_owner"):return self._json({"error":"forbidden"},403)
+                try:
+                    tid=int(path.split("/")[4]);version=int(body.get("version",0))
+                    if isinstance(body.get("version"),bool):raise ValueError()
+                except (TypeError,ValueError):return self._json({"error":"ongeldige melding of versie"},400)
+                status=body.get("status");resolution=str(body.get("resolution") or "").strip()
+                if status not in ("open","in_progress","resolved") or len(resolution)>6000:return self._json({"error":"ongeldige status of reactie"},400)
+                if status=="resolved" and not resolution:return self._json({"error":"vul de oplossing in voordat je afrondt"},400)
+                target=first(sb.table("support_tickets").select("*").eq("id",tid).limit(1).execute())
+                if not target:return self._json({"error":"melding niet gevonden"},404)
+                row=first(sb.table("support_tickets").update({"status":status,"resolution":resolution,"version":version+1,"updated_at":now_iso(),"resolved_at":now_iso() if status=="resolved" else None}).eq("id",tid).eq("version",version).execute())
+                if not row:return self._json({"error":"version_conflict"},409)
+                return self._json({k:v for k,v in row.items() if k not in ("request_key","fingerprint")})
+            if path.startswith("/api/customers/"):
+                if u["role"] not in ("admin","planner"):return self._json({"error":"forbidden"},403)
+                try:
+                    cid=int(path.split("/")[3]);target=customer_by_id(cid)
+                    if not target:return self._json({"error":"klant niet gevonden"},404)
+                    values=clean_customer(body,partial=True)
+                    if isinstance(body.get("version"),bool):raise ValueError("ongeldige versie")
+                    version=int(body.get("version",0))
+                except (TypeError,ValueError) as e:return self._json({"error":str(e)},400)
+                if version!=int(target.get("version",1)):return self._json({"error":"version_conflict"},409)
+                values.update({"version":version+1,"updated_at":now_iso()})
+                row=first(sb.table("customer_records").update(values).eq("organization_id",current_org_id(required=True)).eq("id",cid).eq("version",version).execute())
+                if not row:return self._json({"error":"version_conflict"},409)
+                create_audit(None,u["id"],"customer_updated",str(cid))
+                return self._json(row)
             if path.startswith("/api/owner/organizations/"):
                 if not u.get("is_platform_owner"):return self._json({"error":"forbidden"},403)
                 oid=int(path.split("/")[4])
@@ -1742,6 +1899,8 @@ class Handler(BaseHTTPRequestHandler):
 
             if path=="/api/settings":
                 if u["role"] not in ("admin","planner"):return self._json({"error":"forbidden"},403)
+                admin_fields={"company_name","brand_name","brand_accent","support_email","privacy_url","customer_portal_title"}
+                if u["role"]!="admin" and set(body)&admin_fields:return self._json({"error":"alleen de bedrijfsbeheerder kan bedrijfsinstellingen wijzigen"},403)
                 allowed={"company_name":str,"baseline_planner_minutes":float,"planner_hourly_cost":float,"technician_hourly_cost":float,"avg_site_visit_minutes":float,"avg_roundtrip_km":float,"cost_per_km":float,"software_monthly_cost":float,"monthly_case_volume":float,"brand_name":str,"brand_accent":str,"support_email":str,"privacy_url":str,"customer_portal_title":str}
                 for k,t in allowed.items():
                     if k not in body:continue
@@ -1754,13 +1913,10 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/accounts/"):
                 if u["role"]!="admin":return self._json({"error":"forbidden"},403)
                 uid=int(path.split("/")[3])
-                if uid==u["id"] and body.get("active") is False:return self._json({"error":"eigen adminaccount kan niet worden gedeactiveerd"},400)
-                upd={}
-                for k in ("display_name","role","active"):
-                    if k in body:upd[k]=body[k]
-                if "role" in upd and upd["role"] not in ("admin","planner","technician"):return self._json({"error":"invalid role"},400)
-                row=first(sb.table("users").update(upd).eq("organization_id",current_org_id(required=True)).eq("id",uid).execute());create_audit(None,u["id"],"account_updated",json.dumps({"target_user_id":uid,"changes":upd}))
-                return self._json({k:v for k,v in row.items() if k!="password_hash"})
+                try:return self._json(update_team_account(u,uid,body))
+                except LookupError as e:return self._json({"error":str(e)},404)
+                except PermissionError as e:return self._json({"error":str(e)},403)
+                except ValueError as e:return self._json({"error":str(e)},400)
             if path.startswith("/api/cases/"):
                 cid=int(path.split("/")[3]);c=get_case(cid)
                 if not can_access_case(u,c):return self._json({"error":"not found"},404)

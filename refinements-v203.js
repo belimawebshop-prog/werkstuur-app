@@ -15,7 +15,7 @@ function wsScopeDirty(id){const baseline=wsEditBaselines.get(id);return !!baseli
 function wsDiscardScope(id){const baseline=wsEditBaselines.get(id);if(!baseline)return;for(const control of wsScopeControls(id)){if(!baseline.has(control.id))continue;const value=JSON.parse(baseline.get(control.id));if(control.type==="file")control.value="";else if(["checkbox","radio"].includes(control.type))control.checked=value;else control.value=value;if(id==="newModal"&&control.id==="nType")plannerBrands()}wsUpdateDraftState()}
 function wsVisibleDirtyScopes(){return wsProtectedScopes.filter(id=>{const root=$(id);return root&&!root.classList.contains("hidden")&&wsScopeDirty(id)})}
 function wsConfirmLeave(){
- const writes=["createCase","saveCase","assignCase","saveCaseAnalysis","addNote","uploadFile","saveOutcome"];
+ const writes=["createCase","saveCase","assignCase","saveCaseAnalysis","addNote","uploadFile","saveOutcome","saveCustomer","archiveCustomer","createTeamMember","saveTeamMember","toggleTeamMember","submitSupport","updateSupport"];
  if(typeof runWorkspaceAction==="function"&&writes.some(name=>runWorkspaceAction.pending.has(name))){toast("Wacht even tot het opslaan is bevestigd.","warn");return false}
  const dirty=wsVisibleDirtyScopes();if(!dirty.length)return true;
  if(!confirm("Je hebt invoer die nog niet is opgeslagen. Wil je deze invoer verlaten?"))return false;

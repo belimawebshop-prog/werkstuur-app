@@ -163,7 +163,7 @@ class FakeQuery:
 class AnalysisEndpointTests(unittest.TestCase):
     def setUp(self):
         tree = ast.parse(Path("cloud_server.py").read_text())
-        nodes = [n for n in tree.body if getattr(n, "name", "") in ("Handler", "case_actor_in_organization", "can_access_case")]
+        nodes = [n for n in tree.body if getattr(n, "name", "") in ("Handler", "case_actor_in_organization", "organization_write_path", "can_access_case")]
         self.case = {"id": 7, "organization_id": 3, "type": "Laadpaal", "problem": "Laden lukt niet", "manufacturer": "Easee", "model": "TEST", "serial_no": "TEST-SN", "version": 2, "status": "Review", "assigned_to": 22, "source": "planner", "case_no": "WS-TEST-7", "facts": []}
         self.query = FakeQuery(self.case)
         self.audit = []

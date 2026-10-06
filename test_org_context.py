@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent
 TREE = ast.parse((ROOT / "cloud_server.py").read_text())
-NODES = [n for n in TREE.body if getattr(n, "name", "") in ("case_actor_in_organization", "Handler")]
+NODES = [n for n in TREE.body if getattr(n, "name", "") in ("case_actor_in_organization", "organization_write_path", "Handler")]
 NS = {
     "BaseHTTPRequestHandler": BaseHTTPRequestHandler,
     "urlparse": urlparse,
