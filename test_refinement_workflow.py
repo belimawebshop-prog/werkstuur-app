@@ -12,6 +12,7 @@ import http.cookiejar
 import io
 import json
 import mimetypes
+import os
 import re
 import secrets
 import sys
@@ -31,6 +32,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import analysis_engine
 import backup_archive
+import operations
 import server as core
 
 ROOT = Path(__file__).resolve().parent
@@ -41,6 +43,7 @@ class Query:
         self.database, self.table = database, table
         self.filters, self.sorts = [], []
         self.columns, self.cap, self.operation, self.payload = "*", None, "select", None
+        self.offset = 0
 
     def select(self, columns="*", **kwargs):
         self.columns = columns
@@ -56,6 +59,10 @@ class Query:
 
     def limit(self, count):
         self.cap = count
+        return self
+
+    def range(self, start, end):
+        self.offset, self.cap = start, end-start+1
         return self
 
     def insert(self, payload):
@@ -91,7 +98,7 @@ class Query:
         for field, descending in reversed(self.sorts):
             selected.sort(key=lambda row: (row.get(field) is not None, row.get(field) or ""), reverse=descending)
         if self.cap is not None:
-            selected = selected[:self.cap]
+            selected = selected[self.offset:self.offset+self.cap]
         selected = copy.deepcopy(selected)
         if self.columns != "*":
             fields = self.columns.split(",")
@@ -116,6 +123,11 @@ class MemoryDatabase:
     def upload(self, path, file, **kwargs):
         self.files[path] = bytes(file)
         return {"path": path}
+
+    def remove(self, paths):
+        for path in paths:
+            self.files.pop(path, None)
+        return []
 
 
 class RefinementWorkflowTests(unittest.TestCase):
@@ -142,7 +154,7 @@ class RefinementWorkflowTests(unittest.TestCase):
               "timezone": timezone, "timedelta": timedelta, "date": date, "Path": Path,
               "urlparse": urlparse, "parse_qs": parse_qs, "quote": quote,
               "BaseHTTPRequestHandler": BaseHTTPRequestHandler, "core": core,
-              "analysis_engine": analysis_engine, "backup_archive": backup_archive,
+              "analysis_engine": analysis_engine, "backup_archive": backup_archive,"operations":operations,"os":os,
               "APP_NAME": "Werkstuur", "APP_VERSION": "2.0.3-refined", "APP_BUILD": "2026-10-05",
               "ROOT": ROOT, "STATIC": ROOT, "BUCKET": "isolated-private-files", "MAX_BODY": 7 * 1024 * 1024,
               "SESSION_HOURS": 12, "COOKIE_SECURE": False, "PASSWORD_RESET_MINUTES": 30,
