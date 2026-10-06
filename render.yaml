@@ -35,3 +35,7 @@ services:
         value: https://werkstuur.nl
       - key: APP_PUBLIC_URL
         value: https://portal.werkstuur.nl
+      - key: OPERATIONS_TOKEN
+        sync: false
+      - key: BACKUP_AUTOMATION_ENABLED
+        value: "1"
