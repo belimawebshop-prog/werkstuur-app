@@ -35,13 +35,14 @@ import httpx
 import server as core
 import analysis_engine
 import backup_archive
+import operations
 
 ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "2.1.0-command"
-APP_BUILD = "2026-10-05"
+APP_VERSION = "2.1.1-operations"
+APP_BUILD = "2026-10-06"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
 SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "12"))
@@ -985,6 +986,46 @@ def export_payload():
         "audit":resp_data(sb.table("audit").select("*").eq("organization_id",org_id).execute()),
     }
 
+def backup_manager():
+    def snapshot(org_id):
+        data=sb.rpc("werkstuur_export_organization",{"p_organization_id":org_id,"p_app_version":APP_VERSION}).execute().data
+        if not isinstance(data,dict):raise ValueError("ongeldig organisatie-exportformaat")
+        return data
+    def capacity():
+        data=sb.rpc("werkstuur_backup_usage").execute().data
+        if not isinstance(data,dict):raise ValueError("opslagcontrole niet beschikbaar")
+        return data
+    return operations.BackupManager(sb,snapshot,BUCKET,capacity=capacity)
+
+def start_backup_job(org_id=None,request_key=None):
+    manager=backup_manager()
+    def runner():
+        try:
+            if org_id is None:manager.daily()
+            else:manager.create(org_id,request_key)
+        except Exception as exc:
+            _record_server_error("backup_job",exc)
+    threading.Thread(target=runner,daemon=True,name="werkstuur-backup").start()
+
+def pilot_readiness_payload():
+    org=current_organization() or {}
+    users=resp_data(sb.table("users").select("role,active,is_platform_owner").eq("organization_id",current_org_id(required=True)).execute())
+    role_count=lambda role:sum(1 for u in users if u.get("active") and u["role"]==role and not u.get("is_platform_owner"))
+    setup=onboarding_payload()
+    checks=[
+        {"label":"Bedrijfsinrichting afgerond","ready":setup["complete"],"action":"onboarding"},
+        {"label":"Eigen bedrijfsbeheerder","ready":role_count("admin")>0,"action":"team"},
+        {"label":"Planner toegevoegd","ready":role_count("planner")>0,"action":"team"},
+        {"label":"Monteur toegevoegd","ready":role_count("technician")>0,"action":"team"},
+        {"label":"Privacyverklaring gekoppeld","ready":bool(get_setting("privacy_url","")),"action":"product"},
+        {"label":"Klantintake ingericht","ready":bool(setup.get("intake_token")),"action":"settings"},
+    ]
+    backups=backup_manager().summary(current_org_id(required=True))
+    checks.append({"label":"Recente back-up gecontroleerd","ready":backups["status"]=="current","action":"product"})
+    return {"organization_id":org.get("id"),"organization_name":org.get("name"),"checks":checks,
+            "complete":all(c["ready"] for c in checks),"backup":backups,
+            "notice":"Deze inrichtingcontrole vervangt geen praktijktest of beoordeling van de privacyafspraken."}
+
 def create_team_user(email,name,role,password):
     email=(email or "").lower().strip(); name=(name or "").strip()
     if not email or "@" not in email:raise ValueError("ongeldig e-mailadres")
@@ -1314,6 +1355,33 @@ class Handler(BaseHTTPRequestHandler):
                 u=self._need(("admin",))
                 if not u:return
                 return self._json(system_status_payload(u))
+            if path=="/api/backups":
+                u=self._need(("admin",))
+                if not u:return
+                result=backup_manager().summary(current_org_id(required=True))
+                result["daily_enabled"]=os.environ.get("BACKUP_AUTOMATION_ENABLED")=="1"
+                return self._json(result)
+            if path=="/api/pilot-readiness":
+                u=self._need(("admin",))
+                if not u:return
+                return self._json(pilot_readiness_payload())
+            if path=="/api/owner/backups":
+                u=self._need_owner()
+                if not u:return
+                manager=backup_manager()
+                orgs=resp_data(sb.table("organizations").select("id,name,status,plan").order("id").execute())
+                return self._json({"daily_enabled":os.environ.get("BACKUP_AUTOMATION_ENABLED")=="1",
+                    "organizations":[{**org,"backup":manager.summary(org["id"])} for org in orgs]})
+            if path.startswith("/api/backups/") and re.fullmatch(r"/api/backups/[0-9]+/download",path):
+                u=self._need(("admin",))
+                if not u:return
+                try:raw=backup_manager().download(current_org_id(required=True),int(path.split("/")[3]))
+                except LookupError:return self._json({"error":"backup niet gevonden"},404)
+                except ValueError as exc:return self._json({"error":str(exc)},422)
+                self.send_response(200);self.send_header("Content-Type","application/zip")
+                self.send_header("Content-Disposition",f'attachment; filename="werkstuur-backup-{path.split("/")[3]}.zip"')
+                self.send_header("Content-Length",str(len(raw)));self.send_header("Cache-Control","no-store")
+                self._security_headers();self.end_headers();self.wfile.write(raw);return
             if path=="/api/public-info":
                 token=q.get("token",[""])[0]
                 org=resolve_public_organization(token)
@@ -1451,6 +1519,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Disposition",f'attachment; filename="{safe_filename(a["filename"])}"')
                 self.send_header("Content-Length",str(len(raw)));self._security_headers();self.end_headers();self.wfile.write(raw);return
             return self._static(path)
+        except (BrokenPipeError,ConnectionResetError):
+            return
         except Exception as e:
             transient = isinstance(e, (httpx.ReadError, httpx.ReadTimeout, httpx.ConnectError, httpx.ConnectTimeout)) or (
                 "Resource temporarily unavailable" in repr(e)
@@ -1471,6 +1541,23 @@ class Handler(BaseHTTPRequestHandler):
         if not self._check_origin():return self._json({"error":"invalid origin"},403)
         try:
             path=urlparse(self.path).path
+            if path=="/api/internal/daily-backup":
+                if not operations.token_valid(self.headers.get("X-Werkstuur-Operations",""),os.environ.get("OPERATIONS_TOKEN","")):
+                    return self._json({"error":"unauthorized"},401)
+                if not self._rate_limit("daily-backup",3,3600):return
+                start_backup_job()
+                return self._json({"accepted":True},202)
+            if path=="/api/backups":
+                u=self._need(("admin",))
+                if not u:return
+                if not case_actor_in_organization(u):return self._json({"error":"supportinzage is alleen lezen"},403)
+                if not self._rate_limit("manual-backup",3,3600):return
+                body=self._body()
+                if not isinstance(body,dict) or set(body)!={"request_key"}:return self._json({"error":"ongeldige backupaanvraag"},400)
+                key=str(body.get("request_key") or "")
+                if not re.fullmatch(r"[a-zA-Z0-9-]{16,80}",key):return self._json({"error":"ongeldige aanvraagcode"},400)
+                start_backup_job(current_org_id(required=True),"manual/"+key)
+                return self._json({"accepted":True},202)
             # Public attack surface: bound repeated login attempts and intake spam.
             if path=="/api/login" and not self._rate_limit("login",10,600):return
             if path=="/api/forgot-password" and not self._rate_limit("forgot-password",5,900):return
@@ -1832,6 +1919,8 @@ class Handler(BaseHTTPRequestHandler):
                 row=first(sb.table("attachments").insert({"organization_id":current_org_id(required=True),"case_id":cid,"filename":name,"storage_path":storage_path,"content_type":ctype,"size_bytes":len(raw),"created_by":u["id"],"created_at":now_iso()}).execute())
                 create_audit(cid,u["id"],"attachment_added",name);return self._json(row,201)
             return self._json({"error":"not found"},404)
+        except (BrokenPipeError,ConnectionResetError):
+            return
         except Exception as e:
             _record_server_error("POST "+str(locals().get("path","unknown")), e)
             print("POST ERROR",repr(e),file=sys.stderr);return self._json({"error":"server_error"},500)
@@ -1945,6 +2034,8 @@ class Handler(BaseHTTPRequestHandler):
                 create_audit(cid,u["id"],"case_updated",json.dumps({"status":new_status}))
                 return self._json(row)
             return self._json({"error":"not found"},404)
+        except (BrokenPipeError,ConnectionResetError):
+            return
         except Exception as e:
             _record_server_error("PATCH "+str(locals().get("path","unknown")), e)
             print("PATCH ERROR",repr(e),file=sys.stderr);return self._json({"error":"server_error"},500)
