@@ -128,3 +128,57 @@ const previousProductManagement=loadProductManagement;
 loadProductManagement=async function(){await previousProductManagement();if(!me)return;$("accountAdminCard").style.display=teamWriteAllowed()?"":"none";if(!caseWriteAllowed()){document.querySelectorAll("#productView input,#productView button[onclick='saveBranding()'],#productView button[onclick='resetPilotData()']").forEach(el=>el.disabled=true)}};
 
 $("nCustomer")?.addEventListener("input",()=>{$("nCustomerId").value=""});
+
+// Verified backups and a factual preparation check for the first company pilot.
+let backupPanelGeneration=0,ownerBackupGeneration=0,backupRequestKey=null;
+const backupLabels={current:"Gecontroleerd",overdue:"Back-up verouderd",not_created:"Nog geen back-up",failed:"Controle nodig",running:"Wordt opgeslagen",interrupted:"Opslag onderbroken",complete:"Gecontroleerd",expired:"Bewaartermijn verstreken"};
+const backupErrors={snapshot_failed:"De gegevens konden niet volledig worden opgehaald.",attachment_failed:"Een bijlage ontbreekt of kon niet volledig worden gelezen.",size_limit:"Deze back-up is groter dan de opslaggrens van 32 MB. Gebruik de complete download.",storage_budget:"Het opslagbudget voor back-ups is bereikt.",storage_failed:"Opslaan is niet gelukt.",verification_failed:"De opgeslagen back-up doorstaat de controle niet.",metadata_failed:"De registratie kon niet worden afgerond."};
+function backupStatusPill(status){return `<span class="pill ${["current","complete"].includes(status)?"good":"warn"}">${escapeReport(backupLabels[status]||"Onbekend")}</span>`}
+function ensureBackupPanel(){
+ if($("storedBackupCard"))return;
+ const card=document.createElement("div");card.id="storedBackupCard";card.className="card section";
+ card.innerHTML='<div class="cc-panelhead"><div><span class="cc-kicker">GEGEVENS VEILIGSTELLEN</span><h3>Gecontroleerde back-ups</h3></div><button class="btn" type="button" onclick="loadStoredBackups()">Vernieuwen</button></div><div id="storedBackupState" aria-live="polite"></div><div id="pilotReadinessState" class="section" aria-live="polite"></div>';
+ $("productView").append(card);
+}
+async function loadStoredBackups(poll=0){
+ if(!me||me.role!=="admin")return;
+ ensureBackupPanel();const org=me.organization_id,generation=++backupPanelGeneration;
+ const [result,readiness]=await Promise.allSettled([api("/api/backups"),api("/api/pilot-readiness")]);
+ if(!me||me.organization_id!==org||generation!==backupPanelGeneration)return;
+ if(result.status==="fulfilled"){
+  const b=result.value,latest=b.runs.find(r=>r.status==="complete"),recent=b.runs[0];
+  $("storedBackupState").innerHTML=`<div class="kv"><span>${b.daily_enabled?"Dagelijks automatisch gepland":"Automatische planning nog niet actief"}</span>${backupStatusPill(b.status)}</div><p class="sub">${latest?"Laatst volledig gecontroleerd: "+escapeReport(fmtDateTime(latest.verified_at)):"Er is nog geen volledig gecontroleerde opgeslagen back-up."}</p><p class="sub">De laatste ${Number(b.retention)} geslaagde versies worden privé bewaard, met dossiers en bijlagen. Wachtwoorden en sessies zijn uitgesloten.</p>`+(recent?.status==="failed"?`<p class="warn">${escapeReport(backupErrors[recent.error_code]||"Controleer de back-upregistratie.")}</p>`:"")+`<div class="section ws-backup-actions">${caseWriteAllowed()?'<button class="btn primary" type="button" onclick="createVerifiedBackup()" '+(b.status==="running"?'disabled':'')+'>Back-up nu opslaan</button>':""}${latest?`<a class="btn" href="/api/backups/${Number(latest.id)}/download" download>Laatste gecontroleerde back-up downloaden</a>`:""}</div>`;
+  if((b.status==="running"||poll===1)&&poll<12)setTimeout(()=>{if(me?.organization_id===org&&!$("productView").classList.contains("hidden"))loadStoredBackups(poll+1)},2500);
+ }else{$("storedBackupState").innerHTML=emptyState("Back-upstatus niet opgehaald",result.reason.message,"alert")}
+ if(readiness.status==="fulfilled"){
+  const p=readiness.value,ready=p.checks.filter(c=>c.ready).length;
+  $("pilotReadinessState").innerHTML=`<div class="cc-panelhead"><h3>Voorbereiding op je pilot</h3><span class="pill">${ready} / ${p.checks.length} ingericht</span></div>`+p.checks.map(c=>`<div class="kv"><span>${escapeReport(c.label)}</span>${c.ready?'<span class="good">Gereed</span>':`<button class="cc-textbtn" type="button" onclick="show('${c.action}')">Bekijken ↗</button>`}</div>`).join("")+`<p class="sub">${escapeReport(p.notice)}</p>`;
+ }else{$("pilotReadinessState").innerHTML='<p class="sub">De pilotinrichting kon niet worden gecontroleerd.</p>'}
+}
+async function createVerifiedBackup(){
+ if(!me||!caseWriteAllowed()||me.role!=="admin")return;
+ const org=me.organization_id;if(!backupRequestKey)backupRequestKey=crypto.randomUUID();
+ await api("/api/backups",{method:"POST",body:JSON.stringify({request_key:backupRequestKey})});
+ backupRequestKey=null;if(me?.organization_id!==org)return;
+ toast("Back-up aangevraagd. De status wordt bijgewerkt na controle.","good");await loadStoredBackups(1);
+}
+const createVerifiedBackupAction=createVerifiedBackup;
+window.createVerifiedBackup=(...args)=>runWorkspaceAction("createVerifiedBackup",createVerifiedBackupAction,args);
+async function loadOwnerBackups(){
+ if(!me?.is_platform_owner)return;
+ const org=me.organization_id,generation=++ownerBackupGeneration;
+ if(!$("ownerBackupCard")){
+  const card=document.createElement("div");card.id="ownerBackupCard";card.className="cc-panel section";
+  card.innerHTML='<div class="cc-panelhead"><div><span class="cc-kicker">HERSTEL &amp; CONTINUÏTEIT</span><h3>Back-ups van je omgevingen</h3></div><button class="btn" type="button" onclick="loadOwnerBackups()">Vernieuwen</button></div><div id="ownerBackupState" aria-live="polite"></div>';
+  $("platformView").append(card);
+ }
+ try{
+  const data=await api("/api/owner/backups");
+  if(!me?.is_platform_owner||me.organization_id!==org||generation!==ownerBackupGeneration)return;
+  $("ownerBackupState").innerHTML=`<p class="sub">${data.daily_enabled?"Dagelijkse back-ups zijn gepland. Elke opgeslagen versie wordt teruggelezen en volledig gecontroleerd.":"De automatische planning is nog niet actief."}</p>`+data.organizations.map(o=>`<article class="cmd-company"><span class="cmd-company-avatar">${escapeReport(initials(o.name))}</span><div><b>${escapeReport(o.name)}</b><small>${o.backup.latest_verified_at?"Gecontroleerd "+escapeReport(fmtDateTime(o.backup.latest_verified_at)):"Nog geen gecontroleerde versie"}</small></div>${backupStatusPill(o.backup.status)}<button class="btn" type="button" onclick="switchOrganization(${Number(o.id)})">Inzien ↗</button></article>`).join("");
+ }catch(e){if(me?.organization_id===org&&generation===ownerBackupGeneration)$("ownerBackupState").innerHTML=emptyState("Back-upstatus niet opgehaald",e.message,"alert")}
+}
+const productBeforeBackups=loadProductManagement;
+loadProductManagement=async function(){await productBeforeBackups();if(me?.role==="admin")await loadStoredBackups()};
+const platformBeforeBackups=loadPlatform;
+loadPlatform=async function(){await platformBeforeBackups();if(me?.is_platform_owner)await loadOwnerBackups()};
