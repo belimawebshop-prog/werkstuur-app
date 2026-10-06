@@ -1,5 +1,34 @@
 # Werkstuur: gegevens en bestanden herstellen
 
+## Dagelijkse gecontroleerde back-ups (2.1.1)
+
+Elke organisatie krijgt dagelijks een eigen private kopie, inclusief bijlagen.
+De brongegevens worden in één database-snapshot gelezen. De opgeslagen ZIP
+wordt teruggelezen en het manifest, alle controlesommen en dossierverwijzingen
+worden gevalideerd voordat de kopie als geslaagd wordt geregistreerd.
+De eigenaar ziet de status per organisatie; een bedrijfsbeheerder ziet en
+downloadt alleen de kopieën van zijn eigen organisatie. Supportinzage mag
+lezen, maar geen back-up in een vreemde organisatie starten.
+
+De laatste zeven geslaagde versies worden bewaard. Een oudere kopie vervalt
+pas na een nieuwe geslaagde controle. Een mislukte of onderbroken taak is
+zichtbaar en telt niet als herstelpunt. De private opslag is begrensd op
+200 MB aan back-ups en 800 MB aan totale objectopslag; een opgeslagen ZIP
+mag maximaal 32 MB zijn. Boven die grens blijft de bestaande handmatige
+complete download beschikbaar tot haar grens van 64 MB / 250 bijlagen.
+
+De databaseplanning draait om 02:25 UTC, eenmaal per dag, en roept de
+beveiligde taak op. Het aparte taakgeheim staat uitsluitend in serverconfiguratie
+en Supabase Vault. Het verschijnt niet in broncode, browser of download.
+Een taak kan door slaapstand, een netwerkstoring of een gepauzeerd project
+worden gemist. Na 30 uur zonder geverifieerde kopie is de status verouderd.
+
+Deze kopieën staan in dezelfde Supabase-projectomgeving als de brongegevens.
+Bewaar daarom ook periodiek een eigen private download voor herstel bij
+verlies van het hele project. De bestaande herstelproef hieronder geldt ook
+voor een opgeslagen en gedownloade kopie. Zij herstelt naar een nieuwe map,
+en importeert niets automatisch terug in productie.
+
 Een beheerder kan in Productinstellingen **Complete backup downloaden** gebruiken.
 De private ZIP bevat de organisatiegegevens, dossiers, notities, uitkomsten,
 gebruikersmetadata, instellingen, auditgegevens en alle bijlagebestanden van
