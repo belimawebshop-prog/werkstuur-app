@@ -1,5 +1,6 @@
 """Regression cases for service triage, preserved answers and guarded writes."""
 import ast
+import support_access
 import copy
 import json
 from http.server import BaseHTTPRequestHandler
@@ -167,7 +168,7 @@ class AnalysisEndpointTests(unittest.TestCase):
         self.case = {"id": 7, "organization_id": 3, "type": "Laadpaal", "problem": "Laden lukt niet", "manufacturer": "Easee", "model": "TEST", "serial_no": "TEST-SN", "version": 2, "status": "Review", "assigned_to": 22, "source": "planner", "case_no": "WS-TEST-7", "facts": []}
         self.query = FakeQuery(self.case)
         self.audit = []
-        self.ns = {"BaseHTTPRequestHandler": BaseHTTPRequestHandler, "urlparse": urlparse, "_set_org_context": lambda value: None, "_record_server_error": lambda *args: None, "analysis_engine": engine, "json": json, "get_case": lambda cid: self.case if cid == 7 else None, "current_org_id": lambda **kwargs: 3, "first": lambda r: r.data[0] if r.data else None, "enrich_case": lambda r: r, "sb": self.query, "now_iso": lambda: "2026-10-05T12:00:00Z", "create_audit": lambda *args: self.audit.append(args)}
+        self.ns = {"support_access":support_access,"BaseHTTPRequestHandler": BaseHTTPRequestHandler, "urlparse": urlparse, "_set_org_context": lambda value: None, "_record_server_error": lambda *args: None, "analysis_engine": engine, "json": json, "get_case": lambda cid: self.case if cid == 7 else None, "current_org_id": lambda **kwargs: 3, "first": lambda r: r.data[0] if r.data else None, "enrich_case": lambda r: r, "sb": self.query, "now_iso": lambda: "2026-10-05T12:00:00Z", "create_audit": lambda *args: self.audit.append(args)}
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "cloud_server.py", "exec"), self.ns)
         self.user = {"id": 1, "role": "planner", "organization_id": 3, "base_organization_id": 3}
         self.responses = []
