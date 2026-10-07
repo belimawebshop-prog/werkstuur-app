@@ -34,7 +34,7 @@ def _validate_payload(payload):
     if payload.get("organization", {}).get("id") != org_id:
         raise ValueError("De organisatiegegevens passen niet bij de backup.")
     case_ids = {row["id"] for row in payload.get("cases", [])}
-    for table in ("customers", "support_tickets", "cases", "notes", "audit", "pilots", "pilot_snapshots"):
+    for table in ("customers", "support_tickets", "support_access_requests", "support_access_events", "cases", "notes", "audit", "pilots", "pilot_snapshots"):
         for row in payload.get(table, []):
             if row.get("organization_id", org_id) != org_id:
                 raise ValueError("De backup bevat gegevens van een andere organisatie.")
