@@ -7,7 +7,8 @@ function teamWriteAllowed(){return caseWriteAllowed()&&me?.role==="admin"&&!me?.
 function resetCustomerWorkspace(){customerRows=[];editingCustomer=null;$("customerEditor")?.classList.add("hidden");$("teamCreateForm")?.classList.add("hidden");for(const id of ["customerSearch","teamName","teamEmail","teamPassword","nCustomerId"]){if($(id))$(id).value=""}}
 function configureRoleNavigation(view){
  if(!me)return;
- const owner=!!me.is_platform_owner,tech=me.role==="technician",operational=!owner||(!caseWriteAllowed()&&!["platform","owner","system","beheer","product"].includes(view));
+ const owner=!!me.is_platform_owner,tech=me.role==="technician",supportContext=owner&&!caseWriteAllowed(),operational=!owner||supportContext;
+ $("workspaceReturn")?.classList.toggle("hidden",!supportContext||["dashboard","cases","case","workorders","customers","team","settings","pilotHub","metrics","pilot","report","audit","onboarding"].includes(view));
  document.body.dataset.workspaceMode=owner?"owner":tech?"technician":"company";
  $("platformNav")?.classList.toggle("hidden",!owner);
  $("platformNavGroup")?.classList.remove("hidden");$("supportNav")?.classList.remove("hidden");
@@ -15,14 +16,14 @@ function configureRoleNavigation(view){
  $("customersNav")?.classList.toggle("hidden",tech);
  $("teamAddButton")?.classList.toggle("hidden",!teamWriteAllowed());
  $("customerAddButton")?.classList.toggle("hidden",!customerWriteAllowed());
- $("ownerContextBanner")?.classList.toggle("hidden",!owner||caseWriteAllowed()||!operational);
+ $("ownerContextBanner")?.classList.toggle("hidden",!supportContext);
  document.querySelector(".ws-global-search")?.classList.toggle("hidden",owner&&!operational);
  document.querySelector(".ws-mobile-search")?.classList.toggle("hidden",owner&&!operational);
  if(owner&&!operational){$("workspaceName").textContent="Werkstuur Control";$("workspacePlan").textContent="EIGENAAR"}
  else {$("workspaceName").textContent=me.organization_name||settings?.company_name||"Werkstuur";$("workspacePlan").textContent=owner?"SUPPORTINZAGE":"WERKRUIMTE"}
  const label=document.querySelector(".cc-workspace-label");if(label)label.textContent=owner&&!operational?"SOFTWAREBEHEER":owner?"KLANTOMGEVING · ALLEEN INZAGE":"JOUW WERKOMGEVING";
  document.querySelector(".cc-brandcopy span").textContent=owner?"Control center":tech?"Mijn opdrachten":"Intelligent workspace";
- if(owner)document.title="Werkstuur · Control";
+ if(owner)document.title=supportContext?"Werkstuur · "+(me.organization_name||"Supportinzage"):"Werkstuur · Control";
  if(!teamWriteAllowed())$("teamCreateForm")?.classList.add("hidden");
 }
 async function loadPlatform(){
