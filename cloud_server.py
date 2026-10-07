@@ -293,7 +293,10 @@ def public_intake_file(value):
         raise ValueError("De foto kon niet worden gelezen. Kies de foto opnieuw.")
     if not raw or len(raw) > 5 * 1024 * 1024:
         raise ValueError("Kies een foto van maximaal 5 MB.")
-    name = safe_filename(value.get("name"))
+    filename = value.get("name")
+    if filename is not None and (not isinstance(filename, str) or len(filename) > 500 or re.search(r"[\x00-\x1f\x7f]", filename)):
+        raise ValueError("Kies een foto met een geldige bestandsnaam.")
+    name = safe_filename(filename)
     content_type = value.get("type") or mimetypes.guess_type(name)[0] or ""
     if not isinstance(content_type,str) or content_type not in {"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif", "image/avif", "image/bmp", "image/tiff"}:
         raise ValueError("Kies een foto, bijvoorbeeld JPG, PNG of HEIC.")
