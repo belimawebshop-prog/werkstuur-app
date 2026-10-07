@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "2.1.1-operations"
+APP_VERSION = "2.1.2-refined"
 APP_BUILD = "2026-10-06"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
@@ -253,6 +253,51 @@ sb = _SupabaseProxy()
 def _valid_email(value):
     value=str(value or "").strip()
     return value if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value) else ""
+
+def intake_contact(body, public=True):
+    """Validate contact fields before any case or attachment is written."""
+    values = {}
+    for field, label, maximum in (("customer", "naam", 160), ("city", "plaats", 100),
+                                  ("phone", "telefoonnummer", 60), ("email", "e-mailadres", 254)):
+        value = body.get(field)
+        if value is None:
+            value = ""
+        if not isinstance(value, str):
+            raise ValueError(f"Vul tekst in bij {label}.")
+        value = value.strip()
+        if len(value) > maximum or any(ord(c) < 32 for c in value):
+            raise ValueError(f"Vul een geldig {label} in van maximaal {maximum} tekens.")
+        values[field] = value
+    if not values["customer"]:
+        raise ValueError("Vul de naam van de klant in.")
+    if public and not values["city"]:
+        raise ValueError("Vul de plaats in.")
+    email = values["email"]
+    if email and (not _valid_email(email) or re.search(r'[<>"(),;:\[\]\\]', email)):
+        raise ValueError("Vul een geldig e-mailadres in.")
+    phone = values["phone"]
+    if phone and (not re.fullmatch(r"\+?[0-9 ()./\-]+", phone) or not 7 <= len(re.sub(r"\D", "", phone)) <= 15):
+        raise ValueError("Vul een geldig telefoonnummer in (7 tot 15 cijfers, eventueel met landcode).")
+    if public and not email and not phone:
+        raise ValueError("Vul een telefoonnummer of e-mailadres in, zodat het servicebedrijf je kan bereiken.")
+    return values
+
+def public_intake_file(value):
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("data_base64"), str):
+        raise ValueError("Kies een geldige foto van maximaal 5 MB.")
+    try:
+        raw = base64.b64decode(value["data_base64"], validate=True)
+    except ValueError:
+        raise ValueError("De foto kon niet worden gelezen. Kies de foto opnieuw.")
+    if not raw or len(raw) > 5 * 1024 * 1024:
+        raise ValueError("Kies een foto van maximaal 5 MB.")
+    name = safe_filename(value.get("name"))
+    content_type = value.get("type") or mimetypes.guess_type(name)[0] or ""
+    if not isinstance(content_type,str) or content_type not in {"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif", "image/avif", "image/bmp", "image/tiff"}:
+        raise ValueError("Kies een foto, bijvoorbeeld JPG, PNG of HEIC.")
+    return {"raw": raw, "name": name, "content_type": content_type}
 
 def _mail_configured():
     if not MAIL_NOTIFICATIONS_ENABLED or not SMTP_FROM_EMAIL:
@@ -1261,7 +1306,9 @@ class Handler(BaseHTTPRequestHandler):
     def _body(self):
         n=int(self.headers.get("Content-Length","0") or 0)
         if n>MAX_BODY:raise ValueError("request too large")
-        return json.loads(self.rfile.read(n) or b"{}")
+        value=json.loads(self.rfile.read(n) or b"{}")
+        if not isinstance(value,dict):raise ValueError("ongeldig verzoek; verwacht velden")
+        return value
 
     def _cookie_token(self):
         auth=self.headers.get("Authorization","")
@@ -1628,19 +1675,26 @@ class Handler(BaseHTTPRequestHandler):
                 org=resolve_public_organization(token)
                 if not org:return self._json({"error":"invalid token"},403)
                 org_id=org["id"]
-                typ=str(body.get("type","Onbekend"));problem=str(body.get("problem",""));extra=body.get("extra") or {}
-                try:facts,missing,score,dispatch,prep,fault=analysis_engine.analyze(typ,problem,extra)
+                typ=body.get("type");problem=body.get("problem");extra=body.get("extra")
+                try:
+                    contact=intake_contact(body)
+                    photo=public_intake_file(body.get("file"))
+                    intake_seconds=body.get("intake_seconds",0)
+                    if isinstance(intake_seconds,bool) or not isinstance(intake_seconds,int) or not 0<=intake_seconds<=604800:
+                        raise ValueError("ongeldige invulduur")
+                    extra=analysis_engine.clean_extra(extra)
+                    extra["photo_present"]="nee"
+                    facts,missing,score,dispatch,prep,fault=analysis_engine.analyze(typ,problem,extra)
                 except ValueError as e:return self._json({"error":str(e)},400)
                 extra=analysis_engine.clean_extra(extra)
                 brand=analysis_engine.canonical_brand(extra.get("manufacturer"));src=analysis_engine.source_for(brand);rk=analysis_engine.route_knowledge(fault["category"],typ,brand);fk=core.ftf_knowledge(fault["category"])
-                case_no="WS-"+str(int(time.time()*1000))[-8:]
+                case_no="WS-"+secrets.token_hex(6).upper()
                 row=first(sb.table("cases").insert({
-                    "organization_id":org_id,"case_no":case_no,"source":"customer","customer":str(body.get("customer") or "Nieuwe klant"),
-                    "city":str(body.get("city") or ""),"phone":str(body.get("phone") or ""),"email":str(body.get("email") or ""),
+                    "organization_id":org_id,"case_no":case_no,"source":"customer",**contact,
                     "type":typ,"asset":((brand+" "+str(extra.get("model") or "")).strip() if brand!="Onbekend" else "Nog te identificeren"),
                     "status":"Review" if not missing else "Info ontbreekt","score":score,"problem":problem,
                     "facts":facts,"missing":missing,"dispatch":dispatch,"prep":prep,
-                    "intake_seconds":int(body.get("intake_seconds") or 0),"version":1,
+                    "intake_seconds":intake_seconds,"version":1,
                     "created_at":now_iso(),"updated_at":now_iso(),"manufacturer":brand,
                     "model":str(extra.get("model") or ""),"serial_no":str(extra.get("serial") or ""),
                     "knowledge_title":src["title"],"knowledge_url":src["url"],"api_targets":src["api_targets"],
@@ -1650,18 +1704,29 @@ class Handler(BaseHTTPRequestHandler):
                     "route_source_title":rk["source_title"],"route_source_url":rk["source_url"],
                     "ftf_critical":fk["critical_before_departure"],"ftf_gaps":fk["common_avoidable_gap"],"ftf_parts":fk["parts_categories"],
                 }).execute())
-                file=body.get("file")
-                if file and file.get("data_base64"):
-                    raw=base64.b64decode(file["data_base64"],validate=True)
-                    if len(raw)<=5*1024*1024:
-                        name=safe_filename(file.get("name"));storage_path=f"org/{org_id}/cases/{row['id']}/{secrets.token_hex(12)}-{name}"
-                        sb.storage.from_(BUCKET).upload(path=storage_path,file=raw,file_options={"content-type":file.get("type") or "application/octet-stream","upsert":"false"})
-                        sb.table("attachments").insert({"organization_id":org_id,"case_id":row["id"],"filename":name,"storage_path":storage_path,"content_type":file.get("type") or "application/octet-stream","size_bytes":len(raw),"created_at":now_iso()}).execute()
-                create_audit(row["id"],None,"public_intake","customer self-service; privacy_notice_acknowledged")
+                attachment_saved=None
+                if photo:
+                    try:
+                        storage_path=f"org/{org_id}/cases/{row['id']}/{secrets.token_hex(12)}-{photo['name']}"
+                        sb.storage.from_(BUCKET).upload(path=storage_path,file=photo["raw"],file_options={"content-type":photo["content_type"],"upsert":"false"})
+                        sb.table("attachments").insert({"organization_id":org_id,"case_id":row["id"],"filename":photo["name"],"storage_path":storage_path,"content_type":photo["content_type"],"size_bytes":len(photo["raw"]),"created_at":now_iso()}).execute()
+                        attachment_saved=True
+                    except Exception as exc:
+                        attachment_saved=False
+                        _record_server_error("public intake attachment",exc)
+                    if attachment_saved:
+                        # Only confirmed attachments may be described as present.
+                        extra["photo_present"]="ja"
+                        corrected=analysis_engine.assess(typ,problem,extra)
+                        try:sb.table("cases").update(analysis_engine.case_fields(corrected)).eq("organization_id",org_id).eq("id",row["id"]).execute()
+                        except Exception as exc:_record_server_error("public intake photo metadata",exc)
+                        missing,score=corrected["missing"],corrected["score"]
+                try:create_audit(row["id"],None,"public_intake","customer self-service; privacy_notice_acknowledged")
+                except Exception as exc:_record_server_error("public intake audit",exc)
                 try:mail_queued=queue_public_intake_emails(org_id,row,missing,score)
                 except Exception as exc:
                     _record_mail_result(False,_sanitize_error_message(exc));mail_queued={"customer":False,"planner":False}
-                return self._json({"ok":True,"case_no":case_no,"score":score,"missing":missing,"route":fault["category"],"confirmation_email_queued":bool(mail_queued.get("customer")),"planner_email_queued":bool(mail_queued.get("planner"))},201)
+                return self._json({"ok":True,"case_no":case_no,"score":score,"missing":missing,"route":fault["category"],"attachment_saved":attachment_saved,"confirmation_email_queued":bool(mail_queued.get("customer")),"planner_email_queued":bool(mail_queued.get("planner"))},201)
 
 
             if path=="/api/owner/organizations":
@@ -1711,11 +1776,11 @@ class Handler(BaseHTTPRequestHandler):
                 try:expected=int(body.get("version",0))
                 except (ValueError,TypeError):return self._json({"error":"ongeldige dossierversie"},400)
                 if int(c.get("version") or 1)!=expected:return self._json({"error":"version_conflict","remote":enrich_case(c)},409)
-                try:result=analysis_engine.assess(c["type"],body.get("problem",c.get("problem")),body.get("extra"))
+                try:result=analysis_engine.assess(body.get("type",c["type"]),body.get("problem",c.get("problem")),body.get("extra"))
                 except ValueError as e:return self._json({"error":str(e)},400)
                 extra=result["observations"]
                 update=analysis_engine.case_fields(result)
-                update.update({"problem":result["problem"],"manufacturer":result["manufacturer"],"model":extra.get("model", ""),"serial_no":extra.get("serial", ""),"asset":" ".join(x for x in (result["manufacturer"],extra.get("model")) if x and x!="Onbekend") or "Nog te identificeren","version":expected+1,"updated_at":now_iso()})
+                update.update({"type":result["type"],"problem":result["problem"],"manufacturer":result["manufacturer"],"model":extra.get("model", ""),"serial_no":extra.get("serial", ""),"asset":" ".join(x for x in (result["manufacturer"],extra.get("model")) if x and x!="Onbekend") or "Nog te identificeren","version":expected+1,"updated_at":now_iso()})
                 row=first(sb.table("cases").update(update).eq("organization_id",current_org_id(required=True)).eq("id",cid).eq("version",expected).execute())
                 if not row:return self._json({"error":"version_conflict","remote":enrich_case(get_case(cid))},409)
                 create_audit(cid,u["id"],"analysis_updated",json.dumps({"engine_version":result["engine_version"],"triage":result["triage_level"]}))
@@ -1865,14 +1930,16 @@ class Handler(BaseHTTPRequestHandler):
                     try:customer=customer_by_id(body["customer_id"])
                     except (TypeError,ValueError):return self._json({"error":"ongeldige klant"},400)
                     if not customer or not customer.get("active"):return self._json({"error":"klant niet gevonden"},404)
+                try:contact=intake_contact(body,public=False)
+                except ValueError as e:return self._json({"error":str(e)},400)
                 typ=str(body.get("type","Onbekend"));extra=body.get("extra") or {};problem=str(body.get("problem") or "")
                 try:facts,missing,score,dispatch,prep,fault=analysis_engine.analyze(typ,problem,extra)
                 except ValueError as e:return self._json({"error":str(e)},400)
                 extra=analysis_engine.clean_extra(extra)
                 brand=analysis_engine.canonical_brand(extra.get("manufacturer"));src=analysis_engine.source_for(brand);rk=analysis_engine.route_knowledge(fault["category"],typ,brand);fk=core.ftf_knowledge(fault["category"])
                 row=first(sb.table("cases").insert({
-                    "organization_id":current_org_id(required=True),"case_no":"WS-"+str(int(time.time()*1000))[-8:],"source":"planner","customer":body.get("customer") or "Nieuwe klant",
-                    "city":body.get("city"),"phone":body.get("phone"),"email":body.get("email"),"customer_id":customer["id"] if customer else None,"type":typ,"asset":((brand+" "+str(extra.get("model") or "")).strip() if brand!="Onbekend" else "Nog te identificeren"),
+                    "organization_id":current_org_id(required=True),"case_no":"WS-"+secrets.token_hex(6).upper(),"source":"planner",**contact,
+                    "customer_id":customer["id"] if customer else None,"type":typ,"asset":((brand+" "+str(extra.get("model") or "")).strip() if brand!="Onbekend" else "Nog te identificeren"),
                     "status":"Review" if not missing else "Info ontbreekt","score":score,"problem":problem,"facts":facts,"missing":missing,"dispatch":dispatch,"prep":prep,
                     "assigned_to":body.get("assigned_to"),"created_by":u["id"],"version":1,"created_at":now_iso(),"updated_at":now_iso(),
                     "manufacturer":brand,"model":str(extra.get("model") or ""),"serial_no":str(extra.get("serial") or ""),
@@ -1921,6 +1988,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error":"not found"},404)
         except (BrokenPipeError,ConnectionResetError):
             return
+        except ValueError as e:
+            return self._json({"error":str(e)},400)
         except Exception as e:
             _record_server_error("POST "+str(locals().get("path","unknown")), e)
             print("POST ERROR",repr(e),file=sys.stderr);return self._json({"error":"server_error"},500)
