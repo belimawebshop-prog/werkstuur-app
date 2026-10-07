@@ -3,6 +3,7 @@ import ast
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 import subprocess
+import support_access
 import unittest
 from urllib.parse import urlparse
 
@@ -14,6 +15,7 @@ NS = {
     "urlparse": urlparse,
     "_set_org_context": lambda value: None,
     "_record_server_error": lambda *args: None,
+    "support_access":support_access,
 }
 exec(compile(ast.Module(body=NODES, type_ignores=[]), "cloud_server.py", "exec"), NS)
 
