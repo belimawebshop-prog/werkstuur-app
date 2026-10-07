@@ -33,7 +33,13 @@ from urllib.parse import parse_qs, quote, urlparse
 import analysis_engine
 import backup_archive
 import operations
+import support_access
 import server as core
+
+# Production has pinned httpx; the isolated fixture needs only its exception names.
+class FixtureTransportError(Exception):
+    pass
+httpx=SimpleNamespace(**{name:FixtureTransportError for name in ("ReadError","ReadTimeout","ConnectError","ConnectTimeout")})
 
 ROOT = Path(__file__).resolve().parent
 
@@ -129,6 +135,43 @@ class MemoryDatabase:
             self.files.pop(path, None)
         return []
 
+    def rpc(self, name, params=None):
+        """Auth database double; actual SQL functions are separately tested in Postgres."""
+        params=params or {}
+        def run():
+            actor=next((u for u in self.rows["users"] if u["id"]==params["p_actor_id"] and u.get("active")),None)
+            oid=params.get("p_organization_id")
+            def grant(target):
+                if not actor or not actor.get("is_platform_owner") or actor["organization_id"]==target:return None
+                org=next((o for o in self.rows["organizations"] if o["id"]==target),{})
+                if org.get("status") in ("suspended","archived"):return None
+                for r in reversed(self.rows.get("support_access_requests",[])):
+                    admin=next((u for u in self.rows["users"] if u["id"]==r.get("decided_by")),{})
+                    if r["organization_id"]==target and r["requester_id"]==actor["id"] and support_access.effective_status(r)=="approved" and admin.get("active") and admin.get("role")=="admin" and not admin.get("is_platform_owner") and admin.get("organization_id")==target:
+                        return {"id":r["id"],"organization_id":target,"scope":"workspace_read","expires_at":r["expires_at"],"approved_minutes":r["approved_minutes"],"approved_by":admin["display_name"]}
+                return None
+            if name=="werkstuur_support_access_check":return {"grant":grant(oid)}
+            if name=="werkstuur_support_context":
+                session=next((s for s in self.rows["sessions"] if s["token_hash"]==params["p_session_hash"] and s["user_id"]==actor["id"]),None) if actor else None
+                if not actor or not actor.get("is_platform_owner") or not session:return {"error":"Geen eigenaarstoegang.","http_status":403}
+                if oid!=actor["organization_id"] and not grant(oid):return {"error":"Eerst toestemming aanvragen.","http_status":403,"code":"support_access_required"}
+                org=next((o for o in self.rows["organizations"] if o["id"]==oid),None)
+                if not org:return {"error":"Organisatie niet gevonden.","http_status":404}
+                session["active_organization_id"]=oid
+                return {"ok":True,"organization":copy.deepcopy(org)}
+            raise AssertionError("Unexpected RPC: "+name)
+        return SimpleNamespace(execute=lambda:SimpleNamespace(data=run()))
+
+    def approve_support_fixture(self, requester=1, org=2, admin=2, minutes=30):
+        stamp=datetime.now(timezone.utc)
+        rows=self.rows.setdefault("support_access_requests",[])
+        row={"id":len(rows)+1,"organization_id":org,"requester_id":requester,"reason":"TEST alleen fictieve inzage",
+             "requested_minutes":minutes,"approved_minutes":minutes,"status":"approved","version":2,
+             "created_at":stamp.isoformat(),"request_expires_at":(stamp+timedelta(hours=24)).isoformat(),
+             "decided_by":admin,"decided_at":stamp.isoformat(),"expires_at":(stamp+timedelta(minutes=minutes)).isoformat()}
+        rows.append(row)
+        return row
+
 
 class RefinementWorkflowTests(unittest.TestCase):
     @classmethod
@@ -154,7 +197,7 @@ class RefinementWorkflowTests(unittest.TestCase):
               "timezone": timezone, "timedelta": timedelta, "date": date, "Path": Path,
               "urlparse": urlparse, "parse_qs": parse_qs, "quote": quote,
               "BaseHTTPRequestHandler": BaseHTTPRequestHandler, "core": core,
-              "analysis_engine": analysis_engine, "backup_archive": backup_archive,"operations":operations,"os":os,
+              "analysis_engine": analysis_engine, "backup_archive": backup_archive,"operations":operations,"support_access":support_access,"httpx":httpx,"os":os,
               "APP_NAME": "Werkstuur", "APP_VERSION": "2.0.3-refined", "APP_BUILD": "2026-10-05",
               "ROOT": ROOT, "STATIC": ROOT, "BUCKET": "isolated-private-files", "MAX_BODY": 7 * 1024 * 1024,
               "SESSION_HOURS": 12, "COOKIE_SECURE": False, "PASSWORD_RESET_MINUTES": 30,
