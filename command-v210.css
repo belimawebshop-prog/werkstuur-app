@@ -138,3 +138,7 @@ body.intake-page .err,body.intake-page .safety{background:#332735;border-color:#
 @media(max-width:400px){.cmd-hero{padding:24px 20px}.cmd-hero h2{font-size:34px}.cmd-hero p{max-width:230px}.cmd-hero .btn{font-size:10px}.cmd-stat{padding:15px}.cmd-company{grid-template-columns:30px minmax(0,1fr) auto}.cmd-company-avatar{width:30px;height:30px}.cmd-company .btn{padding:8px}.cmd-orbit{right:-102px}.cmd-stats{gap:9px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 @media print{:root{color-scheme:light}body:before{display:none}body .card,body .cc-panel,body .metric,body .row{background:#fff!important;color:#172b3d!important;border-color:#ccd7df!important;box-shadow:none!important}body #reportView *,body #reportView .sub{color:#172b3d!important}body #reportView .pill{background:#fff!important}}
+
+/* Keep the active support context and its return action usable on narrow screens. */
+#workspaceReturn{font-size:11px;white-space:normal;max-width:115px;line-height:1.35}
+@media(max-width:760px){#workspaceReturn{max-width:78px;font-size:10px;padding:5px}.cc-workspace{gap:7px}.cc-workspace-copy{min-width:0}}
