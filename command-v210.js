@@ -14,6 +14,9 @@ function configureRoleNavigation(view){
  $("platformNavGroup")?.classList.remove("hidden");$("supportNav")?.classList.remove("hidden");
  document.querySelector(".cc-nav-main")?.classList.toggle("hidden",owner&&!operational);
  $("customersNav")?.classList.toggle("hidden",tech);
+ $("settingsNav")?.classList.toggle("hidden",tech||supportContext);
+ for(const id of ["metricsView","pilotView"]){document.querySelectorAll?.(`#${id} input,#${id} textarea,#${id} select`).forEach(el=>el.disabled=supportContext)}
+ document.querySelectorAll?.("button[onclick='saveEconomicAssumptions()'],button[onclick='startPilot()'],button[onclick='takePilotSnapshot()'],button[onclick='closePilot()'],#systemView .ws-analysis-editor").forEach(el=>el.classList.toggle("hidden",supportContext));
  $("teamAddButton")?.classList.toggle("hidden",!teamWriteAllowed());
  $("customerAddButton")?.classList.toggle("hidden",!customerWriteAllowed());
  $("ownerContextBanner")?.classList.toggle("hidden",!supportContext);
@@ -35,8 +38,8 @@ async function loadPlatform(){
   ownerOrganizations=orgResult.value;
   const clients=ownerOrganizations.filter(o=>o.plan!=="internal"),active=clients.filter(o=>["active","pilot"].includes(o.status));
   $("platformClients").textContent=clients.length;$("platformActive").textContent=active.length;
-  $("platformUsers").textContent=clients.reduce((n,o)=>n+Number(o.active_users||0),0);
-  $("platformCompanies").innerHTML=clients.length?clients.slice(0,6).map(o=>`<article class="cmd-company"><span class="cmd-company-avatar">${escapeReport(initials(o.name))}</span><div><b>${escapeReport(o.name)}</b><small>${Number(o.active_users||0)} teamleden · ${Number(o.cases||0)} dossiers</small></div><span class="pill ${["active","pilot"].includes(o.status)?"good":"warn"}">${escapeReport(({active:"Actief",pilot:"Pilot",onboarding:"Inrichting",suspended:"Gepauzeerd",archived:"Archief"})[o.status]||o.status)}</span><button class="btn" type="button" onclick="switchOrganization(${Number(o.id)})">Inzien ↗</button></article>`).join(""):emptyState("Klaar voor je eerste klantbedrijf","Maak een klantomgeving met een eigen bedrijfsbeheerder. Daarna beheert het bedrijf zelf zijn team en klanten.","building",'<button class="btn primary" type="button" onclick="show(\'owner\')">Eerste bedrijf toevoegen</button>');
+  $("platformUsers").textContent=clients.some(o=>!o.can_view)?"Na toestemming":clients.reduce((n,o)=>n+Number(o.active_users||0),0);
+  $("platformCompanies").innerHTML=clients.length?clients.slice(0,6).map(o=>`<article class="cmd-company"><span class="cmd-company-avatar">${escapeReport(initials(o.name))}</span><div><b>${escapeReport(o.name)}</b><small>${escapeReport(supportOrgSummary(o))}</small></div><span class="pill ${["active","pilot"].includes(o.status)?"good":"warn"}">${escapeReport(({active:"Actief",pilot:"Pilot",onboarding:"Inrichting",suspended:"Gepauzeerd",archived:"Archief"})[o.status]||o.status)}</span>${supportOrgAction(o,Number(o.id)===Number(me.organization_id))}</article>`).join(""):emptyState("Klaar voor je eerste klantbedrijf","Maak een klantomgeving met een eigen bedrijfsbeheerder. Daarna beheert het bedrijf zelf zijn team en klanten.","building",'<button class="btn primary" type="button" onclick="show(\'owner\')">Eerste bedrijf toevoegen</button>');
  }else{$("platformCompanies").innerHTML=emptyState("Bedrijven niet opgehaald",orgResult.reason.message,"alert")}
  if(statusResult.status==="fulfilled"){
   const s=statusResult.value,checks=[["Database",s.database?.status==="online"],["Private bijlagen",s.storage?.status==="online"],["E-mailmeldingen",s.mail?.status==="ready"]];
@@ -143,6 +146,7 @@ function ensureBackupPanel(){
 }
 async function loadStoredBackups(poll=0){
  if(!me||me.role!=="admin")return;
+ if(!caseWriteAllowed()){ensureBackupPanel();$("storedBackupState").innerHTML='<p class="sub">Back-ups downloaden valt buiten toestemming voor meekijken.</p>';$("pilotReadinessState").innerHTML="";return}
  ensureBackupPanel();const org=me.organization_id,generation=++backupPanelGeneration;
  const [result,readiness]=await Promise.allSettled([api("/api/backups"),api("/api/pilot-readiness")]);
  if(!me||me.organization_id!==org||generation!==backupPanelGeneration)return;
@@ -176,7 +180,7 @@ async function loadOwnerBackups(){
  try{
   const data=await api("/api/owner/backups");
   if(!me?.is_platform_owner||me.organization_id!==org||generation!==ownerBackupGeneration)return;
-  $("ownerBackupState").innerHTML=`<p class="sub">${data.daily_enabled?"Dagelijkse back-ups zijn gepland. Elke opgeslagen versie wordt teruggelezen en volledig gecontroleerd.":"De automatische planning is nog niet actief."}</p>`+data.organizations.map(o=>`<article class="cmd-company"><span class="cmd-company-avatar">${escapeReport(initials(o.name))}</span><div><b>${escapeReport(o.name)}</b><small>${o.backup.latest_verified_at?"Gecontroleerd "+escapeReport(fmtDateTime(o.backup.latest_verified_at)):"Nog geen gecontroleerde versie"}</small></div>${backupStatusPill(o.backup.status)}<button class="btn" type="button" onclick="switchOrganization(${Number(o.id)})">Inzien ↗</button></article>`).join("");
+  $("ownerBackupState").innerHTML=`<p class="sub">${data.daily_enabled?"Dagelijkse back-ups zijn gepland. Elke opgeslagen versie wordt teruggelezen en volledig gecontroleerd.":"De automatische planning is nog niet actief."}</p>`+data.organizations.map(o=>`<article class="cmd-company"><span class="cmd-company-avatar">${escapeReport(initials(o.name))}</span><div><b>${escapeReport(o.name)}</b><small>${o.backup.latest_verified_at?"Gecontroleerd "+escapeReport(fmtDateTime(o.backup.latest_verified_at)):"Nog geen gecontroleerde versie"}</small></div>${backupStatusPill(o.backup.status)}${supportOrgAction(o,Number(o.id)===Number(me.organization_id))}</article>`).join("");
  }catch(e){if(me?.organization_id===org&&generation===ownerBackupGeneration)$("ownerBackupState").innerHTML=emptyState("Back-upstatus niet opgehaald",e.message,"alert")}
 }
 const productBeforeBackups=loadProductManagement;
