@@ -1,4 +1,4 @@
-# Werkstuur — 2.1.1
+# Werkstuur — 2.1.2
 
 Werkstuur ondersteunt de intake en voorbereiding van technisch servicewerk.
 De cloudversie gebruikt de bestaande gratis Render-service en Supabase voor organisatiegegevens, accounts en private bestanden.
@@ -38,7 +38,14 @@ De server leest zijn geheimen uit de omgeving. Gebruik de bestaande configuratie
 ```sh
 python3 -m unittest discover -q
 node test_editor_refinements.js
+node test_workspace_quality.js
 node --check command-v210.js
 ```
 
 De tests gebruiken geïsoleerde rollen en fictieve gegevens, leveren geen e-mails af en wijzigen geen productiegegevens. Test met echte klantgebruikers en een fysieke telefoon voordat een klantpilot start. De pilot is gericht op 4–6 weken met 20–50 dossiers en gemeten plannerstijd, first-time-fix en tweede bezoeken.
+
+## Wijzigingen 2.1.2
+
+De publieke intake vereist naam, plaats en minimaal één geldig contactgegeven. Alle velden en foto-aanvragen worden vóór dossieraanmaak op de server gecontroleerd. De actuele klantomgeving blijft bij supportinzage zichtbaar, met een directe terugkeer vanuit softwarebeheer. Oudere zonnepanelendossiers worden opnieuw beoordeeld met hun daadwerkelijk bewaarde waarnemingen; niet-analyseerbare dossiers tonen geen oud advies als actuele beoordeling en kunnen door de eigen planner worden hersteld.
+
+De gratis Render-dienst kan na inactiviteit ongeveer een minuut nodig hebben om te starten. Dit abonnement biedt geen productiegarantie. Er is geen betaalde upgrade uitgevoerd.
