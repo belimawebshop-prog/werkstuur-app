@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "2.2.0-consent"
+APP_VERSION = "2.3.0-support-code"
 APP_BUILD = "2026-10-07"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
@@ -549,8 +549,12 @@ def organization_by_id(org_id):
 def current_organization():
     return organization_by_id(current_org_id())
 
+def _support_code_secret():
+    raw=os.environ.get("SUPPORT_CODE_SECRET") or SUPABASE_SECRET_KEY
+    return hashlib.sha256(("werkstuur-support-code|"+raw).encode()).digest()
+
 def support_access_manager():
-    return support_access.AccessManager(sb)
+    return support_access.AccessManager(sb, _support_code_secret())
 
 def foreign_support_context(user):
     return bool(user.get("is_platform_owner")) and not case_actor_in_organization(user)
@@ -783,7 +787,7 @@ def user_from_token(token):
     u["organization_status"] = org.get("status")
     u["organization_plan"] = org.get("plan")
     if effective_org_id != base_org_id and u.get("is_platform_owner"):
-        u["support_access"] = support_access_manager().grant(u["id"], effective_org_id)
+        u["support_access"] = support_access_manager().grant(u["id"], effective_org_id, sha_token(token))
     _set_org_context(effective_org_id)
     return u
 
@@ -1035,7 +1039,7 @@ def export_payload():
         "users":resp_data(sb.table("users").select("id,email,display_name,role,active,created_at").eq("organization_id",org_id).execute()),
         "customers":resp_data(sb.table("customer_records").select("*").eq("organization_id",org_id).execute()),
         "support_tickets":resp_data(sb.table("support_tickets").select("id,organization_id,created_by,ticket_no,subject,description,category,status,resolution,version,created_at,updated_at,resolved_at").eq("organization_id",org_id).execute()),
-        "support_access_requests":[{k:v for k,v in r.items() if k!="request_key"} for r in resp_data(sb.table("support_access_requests").select("*").eq("organization_id",org_id).execute())],
+        "support_access_requests":[support_access.public_request(r) for r in resp_data(sb.table("support_access_requests").select("*").eq("organization_id",org_id).execute())],
         "support_access_events":resp_data(sb.table("support_access_events").select("*").eq("organization_id",org_id).execute()),
         "pilots":resp_data(sb.table("pilots").select("*").eq("organization_id",org_id).execute()),
         "pilot_snapshots":resp_data(sb.table("pilot_snapshots").select("*").eq("organization_id",org_id).execute()),
@@ -1124,13 +1128,13 @@ def initialize_organization_settings(org_id, name, support_email="", privacy_url
     if rows:
         sb.table("organization_settings").upsert(rows,on_conflict="organization_id,key").execute()
 
-def owner_organizations_payload(user):
+def owner_organizations_payload(user, session_hash=""):
     orgs=resp_data(sb.table("organizations").select("*").order("created_at").execute())
     result=[]
     for org in orgs:
         oid=org["id"]
         home = oid == user.get("base_organization_id", user.get("organization_id"))
-        grant = None if home else support_access_manager().grant(user["id"], oid)
+        grant = None if home else support_access_manager().grant(user["id"], oid, session_hash)
         allowed = home or bool(grant)
         # Control metadata remains available; operational data requires approval.
         users_count=_count_rows("users",[("eq","organization_id",oid),("eq","active",True)]) if allowed else None
@@ -1477,14 +1481,14 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/owner/organizations":
                 u=self._need_owner()
                 if not u:return
-                return self._json(owner_organizations_payload(u))
+                return self._json(owner_organizations_payload(u,sha_token(self._cookie_token())))
             if path in ("/api/support-access","/api/owner/support-access"):
                 owner=path.startswith("/api/owner/")
                 u=self._need_owner() if owner else self._need(("admin",))
                 if not u:return
                 if not owner and (u.get("is_platform_owner") or not case_actor_in_organization(u)):
                     return self._json({"error":"Alleen de eigen bedrijfsbeheerder beheert deze toestemming."},403)
-                return self._json(support_access_manager().listing(u,owner=owner))
+                return self._json(support_access_manager().listing(u,owner=owner,session_hash=sha_token(self._cookie_token())))
             if path=="/api/owner/support":
                 u=self._need_owner()
                 if not u:return
@@ -1804,6 +1808,20 @@ class Handler(BaseHTTPRequestHandler):
                 oid=int(body.get("organization_id") or 0)
                 result=support_access_manager().context(owner,sha_token(self._cookie_token()),oid)
                 _set_org_context(oid)
+                return self._json(result)
+            if path=="/api/support-access":
+                u=self._need(("admin",))
+                if not u:return
+                if u.get("is_platform_owner") or not case_actor_in_organization(u):
+                    return self._json({"error":"Alleen de eigen bedrijfsbeheerder vraagt inzage aan."},403)
+                if not self._rate_limit("support-code-request",12,3600):return
+                result=support_access_manager().customer_request(u,body)
+                return self._json(result,201 if result.get("created") else 200)
+            if path.startswith("/api/owner/support-access/") and re.fullmatch(r"/api/owner/support-access/[0-9]+/activate",path):
+                owner=self._need_owner()
+                if not owner:return
+                if not self._rate_limit("support-code-activate",30,3600):return
+                result=support_access_manager().activate(owner,sha_token(self._cookie_token()),path.split("/")[-2],body)
                 return self._json(result)
             if path=="/api/owner/support-access":
                 owner=self._need_owner()
