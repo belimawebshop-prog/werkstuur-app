@@ -108,6 +108,7 @@ class IntakeQualityTests(unittest.TestCase):
         body={"type":"Zonnepanelen","problem":"Geen productie","extra":{"manufacturer":"SolarEdge"},"version":1}
         self.assertEqual(self.request(self.client(4),"/api/cases/91/analysis",body)[0],403)
         owner=self.client(1)
+        self.db.approve_support_fixture()
         self.assertEqual(self.request(owner,"/api/owner/context",{"organization_id":2})[0],200)
         self.assertEqual(self.request(owner,"/api/cases/91/analysis",body)[0],403)
         status,data,_=self.request(self.client(3),"/api/cases/91/analysis",body)
