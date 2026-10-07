@@ -154,3 +154,5 @@ body.intake-page .err,body.intake-page .safety{background:#332735;border-color:#
 .cmd-access-event{display:grid;grid-template-columns:170px 1fr;gap:14px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.07);font-size:13px}
 #ownerContextBanner{flex-wrap:wrap}#ownerContextText{flex:1;min-width:200px}
 @media(max-width:760px){.cmd-access-event{grid-template-columns:1fr;gap:3px}.cmd-access-actions .btn{flex:1;min-width:140px}.cmd-support-top{flex-wrap:wrap}}
+
+.cmd-support-code{padding:20px;border:1px solid rgba(98,208,255,.3);border-radius:14px;background:rgba(98,208,255,.06);margin:16px 0}.cmd-support-code>span{display:block;color:var(--muted);font-size:12px}.cmd-support-code>strong{display:block;font-size:clamp(26px,5vw,38px);letter-spacing:.16em;color:var(--accent,#62d0ff);margin:10px 0;font-variant-numeric:tabular-nums}.cmd-support-code p{font-size:13px;line-height:1.65;max-width:650px}.cmd-access-actions .field{flex:1 1 220px;min-width:0}
