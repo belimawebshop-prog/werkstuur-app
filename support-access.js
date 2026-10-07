@@ -89,9 +89,10 @@ async function recoverSupportAccess(){
  try{
   await api("/api/owner/context",{method:"POST",body:JSON.stringify({organization_id:base})});
   me=await api("/api/me");await Promise.all([loadCases(),loadUsers(),loadSettings()]);
+  login.classList.add("hidden");app.classList.remove("hidden");
   if(settings)applyBranding(settings);render();updateWorkspaceChrome();show("platform",false,true);
   toast("Supportinzage beëindigd. Je bent terug in Werkstuur Control.","warn");
- }catch(error){app.classList.add("hidden");toast(error.message||"De inzage is gestopt. Vernieuw om je eigen omgeving te openen.","warn")}
+ }catch(error){showAuthScreen();$("loginMsg").textContent=error.message||"De inzage is gestopt. Vernieuw om je eigen omgeving te openen."}
  finally{supportAccessRecovering=false}
 }
 function renderSupportAccessBanner(){
