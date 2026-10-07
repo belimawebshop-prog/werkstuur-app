@@ -225,7 +225,7 @@ async function loadOwnerConsole(){
 
 async function switchOrganization(id){
  const target=ownerOrganizations.find(o=>Number(o.id)===Number(id));
- if(target&&target.can_view===false){openSupportAccessRequest(id);return}
+ if(target&&target.can_view===false){show("support");return}
  if(Number(id)===Number(me?.organization_id))return show(Number(me.organization_id)===Number(me.base_organization_id)?"platform":"dashboard");
  if(typeof wsConfirmLeave==="function"&&!wsConfirmLeave())return;
  await api("/api/owner/context",{method:"POST",body:JSON.stringify({organization_id:Number(id)})});current=null;cases=[];users=[];settings=null;resetCustomerWorkspace();me=await api("/api/me");await Promise.all([loadCases(),loadUsers(),loadSettings()]);if(settings)applyBranding(settings);render();updateWorkspaceChrome();if(typeof initSupportAccessMonitoring==="function")initSupportAccessMonitoring();$("setupBanner")?.classList.add("hidden");show(Number(me.organization_id)===Number(me.base_organization_id)?"platform":"dashboard",false);toast("Omgeving geopend: "+(me.organization_name||"Werkstuur"),"good");
