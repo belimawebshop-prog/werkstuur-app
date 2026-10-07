@@ -97,6 +97,7 @@ class CommandWorkspaceTests(unittest.TestCase):
 
     def test_owner_support_context_can_read_but_not_manage_company(self):
         owner=self.client(1)
+        self.db.approve_support_fixture()
         self.assertEqual(self.request(owner,"/api/owner/context",{"organization_id":2})[0],200)
         for path,payload,method in (("/api/customers",{"name":"Test"},"POST"),("/api/accounts",{},"POST"),("/api/accounts/3",{"active":False},"PATCH"),("/api/settings",{"company_name":"Overnemen"},"PATCH"),("/api/onboarding",{},"POST")):
             with self.subTest(path=path):self.assertEqual(self.request(owner,path,payload,method)[0],403)
