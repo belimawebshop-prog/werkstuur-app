@@ -147,7 +147,7 @@ class MemoryDatabase:
                 if org.get("status") in ("suspended","archived"):return None
                 for r in reversed(self.rows.get("support_access_requests",[])):
                     admin=next((u for u in self.rows["users"] if u["id"]==r.get("decided_by")),{})
-                    if r["organization_id"]==target and r["requester_id"]==actor["id"] and support_access.effective_status(r)=="approved" and admin.get("active") and admin.get("role")=="admin" and not admin.get("is_platform_owner") and admin.get("organization_id")==target:
+                    if r["organization_id"]==target and r["requester_id"]==actor["id"] and r.get("flow")=="customer_code" and r.get("activated_session_hash")==params.get("p_session_hash") and any(z["token_hash"]==params.get("p_session_hash") and z["user_id"]==actor["id"] for z in self.rows["sessions"]) and support_access.effective_status(r)=="approved" and admin.get("active") and admin.get("role")=="admin" and not admin.get("is_platform_owner") and admin.get("organization_id")==target:
                         return {"id":r["id"],"organization_id":target,"scope":"workspace_read","expires_at":r["expires_at"],"approved_minutes":r["approved_minutes"],"approved_by":admin["display_name"]}
                 return None
             if name=="werkstuur_support_access_check":return {"grant":grant(oid)}
@@ -159,6 +159,8 @@ class MemoryDatabase:
                 if not org:return {"error":"Organisatie niet gevonden.","http_status":404}
                 session["active_organization_id"]=oid
                 return {"ok":True,"organization":copy.deepcopy(org)}
+            if name=="werkstuur_support_code_change":
+                return self.support_code_change(actor,params)
             raise AssertionError("Unexpected RPC: "+name)
         return SimpleNamespace(execute=lambda:SimpleNamespace(data=run()))
 
@@ -166,11 +168,57 @@ class MemoryDatabase:
         stamp=datetime.now(timezone.utc)
         rows=self.rows.setdefault("support_access_requests",[])
         row={"id":len(rows)+1,"organization_id":org,"requester_id":requester,"reason":"TEST alleen fictieve inzage",
-             "requested_minutes":minutes,"approved_minutes":minutes,"status":"approved","version":2,
+             "requested_minutes":minutes,"approved_minutes":minutes,"status":"approved","version":2,"flow":"customer_code","initiated_by":admin,
+             "activated_session_hash":next((x["token_hash"] for x in reversed(self.rows["sessions"]) if x["user_id"]==requester),"missing-fixture-session"),
              "created_at":stamp.isoformat(),"request_expires_at":(stamp+timedelta(hours=24)).isoformat(),
              "decided_by":admin,"decided_at":stamp.isoformat(),"expires_at":(stamp+timedelta(minutes=minutes)).isoformat()}
         rows.append(row)
         return row
+
+
+    def support_code_change(self, actor, p):
+        # This double only drives HTTP tests. Production SQL is tested separately.
+        if not actor:return {"error":"forbidden","http_status":403}
+        action=p["p_action"];now=datetime.now(timezone.utc)
+        rows=self.rows.setdefault("support_access_requests",[])
+        if action=="request":
+            if actor["role"]!="admin" or actor.get("is_platform_owner"):return {"error":"forbidden","http_status":403}
+            org=next(o for o in self.rows["organizations"] if o["id"]==actor["organization_id"])
+            if org["status"] in ("suspended","archived"):return {"error":"closed","http_status":409}
+            for row in rows:
+                if row.get("initiated_by")==actor["id"] and row.get("request_key")==p["p_request_key"]:
+                    if row["reason"]!=p["p_reason"] or row["requested_minutes"]!=p["p_duration_minutes"]:return {"error":"conflict","http_status":409}
+                    return {"request":copy.deepcopy(row),"created":False}
+                if row["organization_id"]==org["id"] and support_access.effective_status(row) in ("pending","accepted","approved"):return {"error":"open","http_status":409}
+            owner=next(u for u in self.rows["users"] if u.get("is_platform_owner") and u["active"] and u["organization_id"]!=org["id"])
+            row={"id":len(rows)+1,"organization_id":org["id"],"requester_id":owner["id"],"initiated_by":actor["id"],"decided_by":actor["id"],"flow":"customer_code","scope":"workspace_read","reason":p["p_reason"],"requested_minutes":p["p_duration_minutes"],"request_key":p["p_request_key"],"version":1,"status":"pending","created_at":now.isoformat(),"request_expires_at":(now+timedelta(hours=24)).isoformat(),"code_attempts":0}
+            rows.append(row)
+        else:
+            row=next((r for r in rows if r["id"]==p["p_request_id"]),None)
+            if not row:return {"error":"missing","http_status":404}
+            if actor.get("is_platform_owner"):
+                if actor["id"]!=row["requester_id"]:return {"error":"missing","http_status":404}
+            elif actor["role"]!="admin" or actor["organization_id"]!=row["organization_id"] or action not in ("revoke","cancel"):return {"error":"forbidden","http_status":403}
+            if row["version"]!=p["p_version"]:return {"error":"changed","http_status":409}
+            state=support_access.effective_status(row)
+            if (action in ("accept","reject") and state!="pending") or (action=="activate" and state!="accepted") or (action=="revoke" and state!="approved") or (action=="cancel" and state not in ("pending","accepted","approved")):return {"error":"closed","http_status":409}
+            if action=="accept":
+                if p["p_duration_minutes"]>row["requested_minutes"]:return {"error":"duration","http_status":400}
+                row.update(status="accepted",approved_minutes=p["p_duration_minutes"],accepted_at=now.isoformat(),code_nonce=p["p_code_nonce"],code_hash=p["p_code_hash"],code_expires_at=(now+timedelta(minutes=10)).isoformat())
+            elif action=="activate":
+                session=next((z for z in self.rows["sessions"] if z["token_hash"]==p["p_session_hash"] and z["user_id"]==actor["id"]),None)
+                if not session:return {"error":"session","http_status":401}
+                if p["p_code_hash"]!=row["code_hash"] or p["p_code_nonce"]!=row["code_nonce"]:
+                    row["code_attempts"]+=1;row["version"]+=1
+                    if row["code_attempts"]>=5:row.update(status="locked",code_nonce=None,code_hash=None)
+                    self.rows.setdefault("support_access_events",[]).append({"id":len(self.rows.get("support_access_events",[]))+1,"request_id":row["id"],"organization_id":row["organization_id"],"requester_id":row["requester_id"],"actor_name":actor["display_name"],"action":"code_failed","created_at":now.isoformat()})
+                    return {"error":"wrong code","http_status":429 if row["code_attempts"]>=5 else 400,"code":"code_locked" if row["code_attempts"]>=5 else "code_invalid"}
+                row.update(status="approved",decided_at=now.isoformat(),expires_at=(now+timedelta(minutes=row["approved_minutes"])).isoformat(),activated_session_hash=p["p_session_hash"],code_nonce=None,code_hash=None)
+                session["active_organization_id"]=row["organization_id"]
+            else:row.update(status={"revoke":"revoked","cancel":"cancelled","reject":"rejected"}[action],code_nonce=None,code_hash=None)
+            row["version"]+=1
+        self.rows.setdefault("support_access_events",[]).append({"id":len(self.rows.get("support_access_events",[]))+1,"request_id":row["id"],"organization_id":row["organization_id"],"requester_id":row["requester_id"],"actor_name":actor["display_name"],"action":action,"created_at":now.isoformat()})
+        return {"request":copy.deepcopy(row),"created":action=="request"}
 
 
 class RefinementWorkflowTests(unittest.TestCase):
@@ -209,6 +257,7 @@ class RefinementWorkflowTests(unittest.TestCase):
         nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) or getattr(node, "name", "") == "Handler" or (isinstance(node, ast.ImportFrom) and node.module == "__future__")]
         exec(compile(ast.Module(body=nodes, type_ignores=[]), "cloud_server.py", "exec"), ns)
         ns["_reset_secret"] = lambda: b"isolated-test-secret-not-a-production-key"
+        ns["_support_code_secret"] = lambda: b"isolated-test-support-code-secret-not-a-key"
         ns["_mail_configured"] = lambda: True
         ns["_record_server_error"] = lambda scope, exc: cls.server_errors.append((scope, repr(exc)))
         ns["_queue_email"] = lambda *args, **kwargs: cls.mail.append((args, kwargs)) or True
