@@ -1,4 +1,4 @@
-# Werkstuur — 2.2.0
+# Werkstuur — 2.3.0
 
 Werkstuur ondersteunt de intake en voorbereiding van technisch servicewerk.
 De cloudversie gebruikt de bestaande gratis Render-service en Supabase voor organisatiegegevens, accounts en private bestanden.
@@ -10,7 +10,7 @@ De cloudversie gebruikt de bestaande gratis Render-service en Supabase voor orga
 - De bedrijfsbeheerder beheert het eigen team; planners beheren klanten en dossiers.
 - Monteurs zien hun toegewezen dossiers en eigen supportmeldingen.
 - Klanten vullen een publieke intake in via de unieke link van hun servicebedrijf.
-- Supportinzage vereist voorafgaande goedkeuring door een eigen actieve bedrijfsbeheerder. De eigenaar vraagt met reden 15, 30 of 60 minuten aan; de beheerder kan een kortere duur kiezen, afwijzen of direct intrekken. Een aanvraag vervalt na 24 uur, inzage uiterlijk na 60 minuten vanaf goedkeuring.
+- De eigen bedrijfsbeheerder vraagt support aan met reden, expliciete toestemming en maximaal 15, 30 of 60 minuten inzage. De eigenaar accordeert of wijst af. Pas na accordering ziet uitsluitend de aanvragende beheerder een eenmalige achtcijferige code. De eigenaar voert die in; de inzage gaat dan in en is gebonden aan die ingelogde sessie. Een aanvraag vervalt na 24 uur, de code na tien minuten; na vijf onjuiste pogingen is het verzoek geblokkeerd. De klant kan direct intrekken.
 - Alleen de goedgekeurde aanvrager kan de werkruimte en bijlagen bekijken. Wijzigingen, accountovername, intake-tokens, volledige exports en back-updownloads vallen buiten de toestemming. Elke API-aanvraag controleert de toestemming opnieuw.
 - Aanvragen, besluiten, openen en verlaten worden in een aparte alleen-toevoegen geschiedenis bijgehouden en met de organisatie geback-upt. Beheerders vinden aanvragen en geschiedenis onder Ondersteuning; er worden geen e-mails verstuurd voor dit proces.
 
@@ -33,7 +33,7 @@ pip install -r requirements.txt
 python cloud_server.py
 ```
 
-De server leest zijn geheimen uit de omgeving. Gebruik de bestaande configuratie in `render.yaml`; commit nooit sleutels of persoonlijke exports. De Supabase secret key blijft uitsluitend op de server. Pas bij bestaande installaties eerst `support_access_setup.sql` als bijgehouden migratie toe; deze voegt de tabellen, server-only toestemmingsfuncties en aangepaste snapshotfunctie toe. `operations_setup.sql` bevat het server-only back-upregister en de snapshotfuncties. De dagelijkse planning gebruikt `OPERATIONS_TOKEN` in serverconfiguratie en Vault; de activering staat in `BACKUP_AUTOMATION_ENABLED`. Geen extra betaalde dienst is nodig.
+De server leest zijn geheimen uit de omgeving. Gebruik de bestaande configuratie in `render.yaml`; commit nooit sleutels of persoonlijke exports. De Supabase secret key blijft uitsluitend op de server. Pas `support_access_setup.sql` en daarna `support_code_setup.sql` als bijgehouden migraties toe; deze voegt de tabellen, server-only toestemmingsfuncties en aangepaste snapshotfunctie toe. `operations_setup.sql` bevat het server-only back-upregister en de snapshotfuncties. De dagelijkse planning gebruikt `OPERATIONS_TOKEN` in serverconfiguratie en Vault; de activering staat in `BACKUP_AUTOMATION_ENABLED`. Geen extra betaalde dienst is nodig.
 
 ## Controleren
 
@@ -53,6 +53,6 @@ De publieke intake vereist naam, plaats en minimaal één geldig contactgegeven.
 
 De gratis Render-dienst kan na inactiviteit ongeveer een minuut nodig hebben om te starten. Dit abonnement biedt geen productiegarantie. Er is geen betaalde upgrade uitgevoerd.
 
-## Wijzigingen 2.2.0
+## Wijzigingen 2.3.0
 
-Klantgestuurde, tijdelijke toestemming vervangt de onbeperkte eigenaarinzage. Alleen een bedrijfsbeheerder die zelf lid is van het bedrijf en geen platformeigenaar is kan toestemming geven. Intrekken, verlopen, pauzeren van de organisatie of verlies van de goedkeurende beheerderstoegang sluit de API. De browser verwijdert de actieve inzage en keert terug naar Werkstuur Control. Herstel van een back-up mag toestemmingen nooit opnieuw activeren; de meegenomen toestemmingsgegevens zijn geschiedenis.
+Klantgestuurde, tijdelijke toestemming met eenmalige code vervangt de eerdere eigenaarverzoeken. Accordering alleen geeft geen toegang. Codes, verificatiehashes en sessiehashes ontbreken in alle eigenaarreacties, exports en snapshots; codes staan nooit in URLs of logs. Het servergeheim gebruikt een apart afgeleide sleutel uit de bestaande serverconfiguratie (optioneel `SUPPORT_CODE_SECRET`). Er is geen extra betaalde dienst. De oude RPC kan geen toegang meer verlenen. Alleen een bedrijfsbeheerder die zelf lid is van het bedrijf en geen platformeigenaar is kan toestemming geven. Intrekken, verlopen, pauzeren van de organisatie of verlies van de goedkeurende beheerderstoegang sluit de API. De browser verwijdert de actieve inzage en keert terug naar Werkstuur Control. Herstel van een back-up mag toestemmingen nooit opnieuw activeren; de meegenomen toestemmingsgegevens zijn geschiedenis.
