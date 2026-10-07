@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 import server as profiles
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 TYPES = ("Laadpaal", "Zonnepanelen", "Thuisbatterij", "Elektro")
 UNKNOWN = {"", "onbekend", "anders/onbekend", "unknown", "weet niet", "niet bekend", "niet beschikbaar", "not available", "unavailable", "none", "geen", "n.v.t.", "nvt", "n/a", "?", "-", "—"}
 NO_ERROR = {"geen", "nee", "none", "no", "0", "geen fout", "geen foutcode", "geen foutmelding", "no error", "no fault"}
@@ -348,7 +348,13 @@ def source_for(brand):
 
 
 def for_case(case):
-    result = assess(case["type"], case.get("problem"), observations_for_case(case))
+    # This legacy label unambiguously describes the existing solar service type.
+    # Reassess the actual saved observations; never reuse a legacy completeness score.
+    original_type = case["type"]
+    current_type = "Zonnepanelen" if original_type == "Zonnepanelen / omvormer" else original_type
+    result = assess(current_type, case.get("problem"), observations_for_case(case))
+    if current_type != original_type:
+        result["warnings"].append("Ouder installatietype weergegeven als Zonnepanelen. Laat de planner de installatie en ontbrekende waarnemingen controleren.")
     facts = case.get("facts") or []
     if not any(isinstance(f, str) and f.startswith("Analyseversie: ") for f in (facts if isinstance(facts, list) else [])):
         result["warnings"].append("Ouder dossier: oorspronkelijke vervolgantwoorden zijn mogelijk niet bewaard. Vul ontbrekende waarnemingen aan voor een vollediger advies.")
