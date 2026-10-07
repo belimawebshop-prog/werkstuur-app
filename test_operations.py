@@ -170,8 +170,9 @@ class OperationsHTTPTests(RefinementWorkflowTests):
 
     def test_owner_can_inspect_backups_but_not_write_in_foreign_company(self):
         owner=self.client(1)
+        self.db.approve_support_fixture()
         self.request(owner,"/api/owner/context",{"organization_id":2})
-        self.assertEqual(self.request(owner,"/api/backups")[0],200)
+        self.assertEqual(self.request(owner,"/api/backups")[0],403)
         self.assertEqual(self.request(owner,"/api/backups",{"request_key":"test-request-123456"})[0],403)
         self.assertEqual(self.started,[])
 
