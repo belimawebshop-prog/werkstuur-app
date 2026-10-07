@@ -36,13 +36,14 @@ import server as core
 import analysis_engine
 import backup_archive
 import operations
+import support_access
 
 ROOT = Path(__file__).resolve().parent
 STATIC = (ROOT / "static") if (ROOT / "static").is_dir() else ROOT
 
 APP_NAME = "Werkstuur"
-APP_VERSION = "2.1.2-refined"
-APP_BUILD = "2026-10-06"
+APP_VERSION = "2.2.0-consent"
+APP_BUILD = "2026-10-07"
 BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "preflight-attachments")
 MAX_BODY = 7 * 1024 * 1024
 SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "12"))
@@ -548,6 +549,12 @@ def organization_by_id(org_id):
 def current_organization():
     return organization_by_id(current_org_id())
 
+def support_access_manager():
+    return support_access.AccessManager(sb)
+
+def foreign_support_context(user):
+    return bool(user.get("is_platform_owner")) and not case_actor_in_organization(user)
+
 def resolve_public_organization(token):
     token = str(token or "")
     if not token:
@@ -775,6 +782,8 @@ def user_from_token(token):
     u["organization_slug"] = org.get("slug")
     u["organization_status"] = org.get("status")
     u["organization_plan"] = org.get("plan")
+    if effective_org_id != base_org_id and u.get("is_platform_owner"):
+        u["support_access"] = support_access_manager().grant(u["id"], effective_org_id)
     _set_org_context(effective_org_id)
     return u
 
@@ -1026,6 +1035,8 @@ def export_payload():
         "users":resp_data(sb.table("users").select("id,email,display_name,role,active,created_at").eq("organization_id",org_id).execute()),
         "customers":resp_data(sb.table("customer_records").select("*").eq("organization_id",org_id).execute()),
         "support_tickets":resp_data(sb.table("support_tickets").select("id,organization_id,created_by,ticket_no,subject,description,category,status,resolution,version,created_at,updated_at,resolved_at").eq("organization_id",org_id).execute()),
+        "support_access_requests":[{k:v for k,v in r.items() if k!="request_key"} for r in resp_data(sb.table("support_access_requests").select("*").eq("organization_id",org_id).execute())],
+        "support_access_events":resp_data(sb.table("support_access_events").select("*").eq("organization_id",org_id).execute()),
         "pilots":resp_data(sb.table("pilots").select("*").eq("organization_id",org_id).execute()),
         "pilot_snapshots":resp_data(sb.table("pilot_snapshots").select("*").eq("organization_id",org_id).execute()),
         "cases":resp_data(sb.table("cases").select("*").eq("organization_id",org_id).execute()),
@@ -1113,23 +1124,29 @@ def initialize_organization_settings(org_id, name, support_email="", privacy_url
     if rows:
         sb.table("organization_settings").upsert(rows,on_conflict="organization_id,key").execute()
 
-def owner_organizations_payload():
+def owner_organizations_payload(user):
     orgs=resp_data(sb.table("organizations").select("*").order("created_at").execute())
     result=[]
     for org in orgs:
         oid=org["id"]
-        users_count=len(resp_data(sb.table("users").select("id").eq("organization_id",oid).eq("active",True).execute()))
-        cases_rows=resp_data(sb.table("cases").select("id,created_at").eq("organization_id",oid).order("created_at",desc=True).limit(1).execute())
-        cases_count=_count_rows("cases",[("eq","organization_id",oid)])
-        active_pilots=_count_rows("pilots",[("eq","organization_id",oid),("eq","active",True)])
-        onboarding=get_setting("onboarding_complete","0",organization_id=oid)=="1"
+        home = oid == user.get("base_organization_id", user.get("organization_id"))
+        grant = None if home else support_access_manager().grant(user["id"], oid)
+        allowed = home or bool(grant)
+        # Control metadata remains available; operational data requires approval.
+        users_count=_count_rows("users",[("eq","organization_id",oid),("eq","active",True)]) if allowed else None
+        cases_rows=resp_data(sb.table("cases").select("id,created_at").eq("organization_id",oid).order("created_at",desc=True).limit(1).execute()) if allowed else []
+        cases_count=_count_rows("cases",[("eq","organization_id",oid)]) if allowed else None
+        active_pilots=_count_rows("pilots",[("eq","organization_id",oid),("eq","active",True)]) if allowed else None
+        onboarding=get_setting("onboarding_complete","0",organization_id=oid)=="1" if allowed else None
+        can_request = not home and org.get("status") not in ("suspended","archived") and bool(first(sb.table("users").select("id").eq("organization_id",oid).eq("role","admin").eq("active",True).eq("is_platform_owner",False).limit(1).execute()))
         result.append({
             **org,
             "active_users":users_count,
             "cases":cases_count,
-            "active_pilot":active_pilots>0,
+            "active_pilot":active_pilots>0 if active_pilots is not None else None,
             "onboarding_complete":onboarding,
             "last_activity":cases_rows[0]["created_at"] if cases_rows else None,
+            "can_view":allowed,"can_request_access":can_request,"support_access":grant,
         })
     return result
 
@@ -1296,6 +1313,13 @@ class Handler(BaseHTTPRequestHandler):
         return {}
 
     def _json(self,obj,status=200,extra_headers=None):
+        read_user = getattr(self, "_support_read_user", None)
+        if status < 400 and read_user:
+            fresh = self._user()
+            if (not fresh or fresh.get("organization_id") != read_user["organization_id"]
+                    or not fresh.get("support_access")):
+                obj={"error":"De toestemming voor inzage is ingetrokken of verlopen.","code":"support_access_required"}
+                status=403
         raw=json.dumps(obj,ensure_ascii=False,default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type","application/json; charset=utf-8")
@@ -1330,6 +1354,18 @@ class Handler(BaseHTTPRequestHandler):
         u=self._user()
         if not u:self._json({"error":"unauthorized"},401);return None
         if roles and u["role"] not in roles:self._json({"error":"forbidden"},403);return None
+        path=urlparse(self.path).path
+        expected_org=self.headers.get("X-Werkstuur-Organization") if hasattr(self,"headers") else None
+        if path!="/api/me" and not path.startswith("/api/owner/") and expected_org and expected_org!=str(u["organization_id"]):
+            self._json({"error":"De actieve omgeving is gewijzigd. Vernieuw de werkruimte.","code":"organization_context_changed"},409);return None
+        if foreign_support_context(u) and path!="/api/me" and not path.startswith("/api/owner/"):
+            if not u.get("support_access"):
+                self._json({"error":"De bedrijfsbeheerder moet eerst toestemming geven voor tijdelijke inzage.","code":"support_access_required"},403);return None
+            if path.startswith("/api/export") or path.startswith("/api/backups/") or path=="/api/backups":
+                self._json({"error":"Exports en back-ups vallen buiten toestemming voor meekijken.","code":"support_scope_denied"},403);return None
+            if getattr(self,"command","GET")!="GET":
+                self._json({"error":"Supportinzage is alleen lezen. Gebruik een eigen teamaccount voor wijzigingen.","code":"organization_member_required"},403);return None
+            self._support_read_user=u
         return u
 
     def _need_owner(self):
@@ -1372,7 +1408,7 @@ class Handler(BaseHTTPRequestHandler):
     def _static(self,path):
         if path=="/":path="/index.html"
         public_files = {"/index.html", "/intake.html", "/app.js", "/workspace-v200.css",
-                        "/command-v210.css", "/command-v210.js",
+                        "/command-v210.css", "/command-v210.js", "/support-access.js",
                         "/analysis-ui-v201.css", "/refinements-v203.js", "/refinements-v203.css",
                         "/intake-ui-v200.js", "/manifest.webmanifest", "/apple-touch-icon.png",
                         "/icon-192.png", "/icon-512.png"}
@@ -1387,6 +1423,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         _set_org_context(None)
+        self._support_read_user=None
         try:
             p=urlparse(self.path);path=p.path;q=parse_qs(p.query)
             if path=="/api/health":
@@ -1440,7 +1477,14 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/owner/organizations":
                 u=self._need_owner()
                 if not u:return
-                return self._json(owner_organizations_payload())
+                return self._json(owner_organizations_payload(u))
+            if path in ("/api/support-access","/api/owner/support-access"):
+                owner=path.startswith("/api/owner/")
+                u=self._need_owner() if owner else self._need(("admin",))
+                if not u:return
+                if not owner and (u.get("is_platform_owner") or not case_actor_in_organization(u)):
+                    return self._json({"error":"Alleen de eigen bedrijfsbeheerder beheert deze toestemming."},403)
+                return self._json(support_access_manager().listing(u,owner=owner))
             if path=="/api/owner/support":
                 u=self._need_owner()
                 if not u:return
@@ -1451,11 +1495,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(support_tickets_payload(u))
             if path=="/api/me":
                 u=self._need()
-                if u:return self._json(u)
+                if u:
+                    if foreign_support_context(u) and not u.get("support_access"):
+                        ended_org=u["organization_id"]
+                        support_access_manager().context(u,sha_token(self._cookie_token()),u["base_organization_id"])
+                        u=self._user()
+                        u["support_access_ended"]=ended_org
+                    return self._json(u)
                 return
             if path=="/api/onboarding-status":
                 u=self._need(("admin","planner"))
-                if u:return self._json(onboarding_payload())
+                if u:
+                    result=onboarding_payload()
+                    if foreign_support_context(u):result["intake_token"]=None
+                    return self._json(result)
                 return
 
             if path=="/api/settings":
@@ -1463,7 +1516,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not u:return
                 return self._json({
                     "company_name":get_setting("company_name"),
-                    "intake_token":get_setting("intake_token"),
+                    "intake_token":None if foreign_support_context(u) else get_setting("intake_token"),
                     "brand_name":get_setting("brand_name","Werkstuur"),
                     "brand_accent":get_setting("brand_accent","#62d0ff"),
                     "support_email":get_setting("support_email",""),
@@ -1565,12 +1618,18 @@ class Handler(BaseHTTPRequestHandler):
                 c=get_case(a["case_id"])
                 if not can_access_case(u,c):return self._json({"error":"not found"},404)
                 raw=sb.storage.from_(BUCKET).download(a["storage_path"])
+                if foreign_support_context(u):
+                    fresh=self._user()
+                    if not fresh or fresh.get("organization_id")!=u["organization_id"] or not fresh.get("support_access"):
+                        return self._json({"error":"De toestemming voor inzage is ingetrokken of verlopen.","code":"support_access_required"},403)
                 self.send_response(200);self.send_header("Content-Type",a.get("content_type") or "application/octet-stream")
                 self.send_header("Content-Disposition",f'attachment; filename="{safe_filename(a["filename"])}"')
-                self.send_header("Content-Length",str(len(raw)));self._security_headers();self.end_headers();self.wfile.write(raw);return
+                self.send_header("Content-Length",str(len(raw)));self.send_header("Cache-Control","no-store");self._security_headers();self.end_headers();self.wfile.write(raw);return
             return self._static(path)
         except (BrokenPipeError,ConnectionResetError):
             return
+        except support_access.AccessError as e:
+            return self._json({"error":str(e),"code":e.code},e.status)
         except Exception as e:
             transient = isinstance(e, (httpx.ReadError, httpx.ReadTimeout, httpx.ConnectError, httpx.ConnectTimeout)) or (
                 "Resource temporarily unavailable" in repr(e)
@@ -1588,6 +1647,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         _set_org_context(None)
+        self._support_read_user=None
         if not self._check_origin():return self._json({"error":"invalid origin"},403)
         try:
             path=urlparse(self.path).path
@@ -1742,12 +1802,22 @@ class Handler(BaseHTTPRequestHandler):
                 owner=self._need_owner()
                 if not owner:return
                 oid=int(body.get("organization_id") or 0)
-                org=organization_by_id(oid)
-                if not org:return self._json({"error":"organisatie niet gevonden"},404)
-                token=self._cookie_token()
-                sb.table("sessions").update({"active_organization_id":oid}).eq("token_hash",sha_token(token)).execute()
+                result=support_access_manager().context(owner,sha_token(self._cookie_token()),oid)
                 _set_org_context(oid)
-                return self._json({"ok":True,"organization":org})
+                return self._json(result)
+            if path=="/api/owner/support-access":
+                owner=self._need_owner()
+                if not owner:return
+                if not self._rate_limit("support-access-request",12,3600):return
+                result=support_access_manager().request(owner,body)
+                return self._json(result,201 if result.get("created") else 200)
+            if path.startswith(("/api/support-access/","/api/owner/support-access/")) and re.fullmatch(r"/api/(?:owner/)?support-access/[0-9]+",path):
+                owner=path.startswith("/api/owner/")
+                u=self._need_owner() if owner else self._need(("admin",))
+                if not u:return
+                if not owner and (u.get("is_platform_owner") or not case_actor_in_organization(u)):
+                    return self._json({"error":"Alleen de eigen bedrijfsbeheerder kan dit besluit nemen."},403)
+                return self._json(support_access_manager().decide(u,path.split("/")[-1],body,owner=owner))
 
             u=self._need()
             if not u:return
@@ -1991,6 +2061,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error":"not found"},404)
         except (BrokenPipeError,ConnectionResetError):
             return
+        except support_access.AccessError as e:
+            return self._json({"error":str(e),"code":e.code},e.status)
         except ValueError as e:
             return self._json({"error":str(e)},400)
         except Exception as e:
@@ -1999,6 +2071,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         _set_org_context(None)
+        self._support_read_user=None
         if not self._check_origin():return self._json({"error":"invalid origin"},403)
         try:
             path=urlparse(self.path).path;body=self._body();u=self._need()
